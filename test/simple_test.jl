@@ -243,3 +243,29 @@ for x in bin_test_points
     y, logdet = with_logabsdet_jacobian(b_ext, x)
     println("  x=$x -> y=$(round(y, digits=4)), logdet=$(round(logdet, digits=4))")
 end
+
+# Extra advanced tests
+
+# FF = RationalQuadraticSpline(rand(31, 10), 0, 1)
+# FF(rand(1, 10))
+
+# const amask = Bijectors.PartitionMask(11, [1], 1:10) # acts on 1.
+
+# partitioned = Bijectors.partition(amask, rand(11, 55))
+# @assert partitioned[2] |> size == (10, 55)
+
+# layer = Bijectors.Coupling(amask) do z
+#     RationalQuadraticSpline(z, 0.0, 1.0)
+# end
+
+# layer(rand(11, 55))
+
+
+# using Plots
+# theme(:boxed)
+
+# ft = RationalQuadraticSpline([0.4, 0.6, 0.4, 0.6, 1.0, 0.01, 5.0], 0, 1)
+# let
+#     plot(x -> ft(x), 0, 1)
+#     scatter!(ft.x_pos, ft.y_pos)
+# end
