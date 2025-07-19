@@ -1,6 +1,7 @@
 [deps]
 AbstractMCMC = "80f14c24-f653-4e6a-9b94-39d6b0f70001"
 AdvancedHMC = "0bf59076-c3b1-5ca4-86bd-e02cd72cde3d"
+Bijectors = "76274a88-744f-5084-9051-94815aaf08c4"
 ChainRulesTestUtils = "cdddcdb0-9152-4a09-a978-84456f9df70a"
 ChangesOfVariables = "9e997f8a-9a97-42d5-a9f1-ce6bfc15e2c0"
 Combinatorics = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"
