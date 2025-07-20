@@ -35,9 +35,13 @@ q_test = let
     Bijectors.transformed(_base, _flow)
 end
 
-
 pdf(q_test, rand(2))
 rand(q_test)
+
+
+θ_flat, re = Optimisers.destructure(q_advanced)
+
+size(θ_flat)
 
 samples = rand(q_test, 100_000)
 
@@ -55,11 +59,14 @@ using FunctionChains
 
 function create_flow(n_layers::Int, q₀)
     Ls = map(1:n_layers) do i
-        isodd(i) ? Coupling(create_bijector, mask12) : Coupling(create_bijector, mask21)
+        isodd(i) ?
+        Coupling(RationalQuadraticSpline ∘ conditioner, mask12) :
+        Coupling(RationalQuadraticSpline ∘ conditioner, mask21)
     end
     ts = fchain(Ls)
     return transformed(q₀, ts)
 end
+
 
 q_advanced = let
     _base = Distributions.Product([Uniform(0, 1), Uniform(0, 1)])
@@ -74,3 +81,9 @@ plot(layout = grid(1, 2), size = (1000, 500),
     histogram2d(samples[1, :], samples[2, :], aspect_ratio = 1, bins = 50))
 # 
 
+
+θ_flat, re = Optimisers.destructure(q_advanced)
+θ_flat
+
+
+Optimisers.destructure(Dense(3, 13))
