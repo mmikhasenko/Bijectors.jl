@@ -74,30 +74,49 @@ function RationalQuadraticSpline(
   - Centralizes validation logic
   - Follows Distrax parameter layout: `[widths..., heights..., slopes...]`
 
-### **3. Dimension Handling Strategy**
-**Decision:** Explicit vector vs matrix parameter handling
+### **3. Broadcasting Dimension Strategy**
+**Decision:** Comprehensive broadcasting system supporting arbitrary parameter dimensionalities
+
+**Core Broadcasting Rules:**
+- **Rule 0:** Output has same dimensions as input `x`
+- **Rule 1:** `x` has dimensions `(N, D)`
+  - `params (3nbins+1,)` → broadcast same spline to all elements
+  - `params (3nbins+1, N)` → N splines applied to first dimension, broadcast over second  
+  - `params (3nbins+1, N, D)` → N×D splines applied correctly to each element
+  - `params (3nbins+1, N, D, L)` → error (too many dimensions)
+- **Rule 2:** `x` has dimensions `(N,)`
+  - `params (3nbins+1,)` → broadcast same spline to all elements
+  - `params (3nbins+1, N)` → N splines applied to each element
+  - `params (3nbins+1, N, D)` → error (too many dimensions)
+- **Rule 3:** `x` is scalar
+  - `params (3nbins+1,)` → apply spline to scalar
+  - `params (3nbins+1, N)` → error (too many dimensions)
+
+**Implementation Strategy:**
 ```julia
-if ndims(params) == 1
-    # Vector case: single spline
-    unnormalized_bin_widths = params[1:num_bins]
-    # ...
-else
-    # Matrix case: multiple splines
-    unnormalized_bin_widths = params[1:num_bins, :]
-    # ...
+function _validate_and_get_param_slices(params, x)
+    # Validate broadcasting compatibility
+    x_dims = size(x)
+    param_trailing_dims = size(params)[2:end]
+    
+    # Check if broadcasting is valid
+    if length(param_trailing_dims) > length(x_dims)
+        error("Parameter dimensions exceed input dimensions")
+    end
+    
+    # Return appropriate parameter slicing strategy
+    return _get_broadcasting_strategy(param_trailing_dims, x_dims)
 end
 ```
 
-**Rationale:** Clear distinction between single and multi-spline cases
-- **Vector params:** Creates `RationalQuadraticSpline{Vector, 0}` for scalar inputs
-- **Matrix params:** Creates `RationalQuadraticSpline{Matrix, 1}` for vector/matrix inputs
+**Rationale:** Flexible broadcasting enables efficient parameter sharing while maintaining mathematical correctness
 
 ### **4. Type Parameter Strategy**
-- **`T`:** Type of stored parameters (`AbstractVector` or `AbstractMatrix`)
-- **`N`:** Number of feature dimensions (0 for single spline, 1 for multiple)
+- **`T`:** Type of stored parameters (any `AbstractArray` with arbitrary dimensions)
 
-**Decision:** Use type parameters for dispatch and optimization
-- **Benefit:** Enables efficient method dispatch and specialization
+**Decision:** Simplified type parameter system supporting arbitrary parameter dimensions
+- **Benefit:** Single unified implementation handles all broadcasting cases
+- **Advantage:** Eliminates complex type-based dispatch in favor of runtime broadcasting logic
 
 ---
 
@@ -173,19 +192,28 @@ if x <= range_min || x >= range_max
 end
 ```
 
-### **3. Matrix Indexing Issues**
-**Problem:** Incorrect feature dimension calculation in loops
+### **3. Broadcasting Complexity Issues**
+**Problem:** Need to support arbitrary parameter dimensions with proper broadcasting
 ```julia
-# BROKEN
-feature_dim = size(x, ndims(x)) > 1 ? i[end] : 1
+# COMPLEX: Old approach with multiple dispatch
+function transform(b::RationalQuadraticSpline{<:AbstractVector}, x::Real)
+function transform(b::RationalQuadraticSpline{<:AbstractMatrix}, x::AbstractVecOrMat)
 
-# FIXED
-if ndims(x) == 1
-    # Vector: each element uses its feature index
-    view(b.x_pos, :, i)
-else
-    # Matrix: use column index for feature
-    view(b.x_pos, :, col)
+# SIMPLIFIED: New unified approach with runtime broadcasting
+function _get_param_slice(params, indices...)
+    if ndims(params) == 1
+        return view(params, :)  # Broadcast case
+    else
+        # Smart indexing with broadcasting rules
+        param_indices = ntuple(ndims(params) - 1) do i
+            if i <= length(indices) && size(params, i + 1) != 1
+                indices[i]
+            else
+                1  # Broadcast dimension
+            end
+        end
+        return view(params, :, param_indices...)
+    end
 end
 ```
 
@@ -207,17 +235,25 @@ RationalQuadraticSpline,
 
 ## **🧪 Testing Strategy & Implementation**
 
-### **1. Constructor Verification**
-```julia
-# Scalar case (vector params)
-params = randn(3 * K + 1)
-b = RationalQuadraticSpline(params, -4.0, 4.0)
-# Verify: size(b.x_pos) == (K + 1,)
+### **1. Comprehensive Broadcasting Tests**
+All tests in `simple_test.jl` and `broadcasting_test.jl` follow the broadcasting rules:
 
-# Matrix case (matrix params)  
-params_mat = randn(3 * K + 1, D)
-b_mat = RationalQuadraticSpline(params_mat, -4.0, 4.0)
-# Verify: size(b_mat.x_pos) == (K + 1, D)
+```julia
+# Rule 3: Scalar input - verified with constructor tests
+x_scalar = 0.5
+transform(b_scalar, x_scalar)  # Single spline application
+
+# Rule 2: Vector input (N,) - verified with both broadcasting scenarios  
+Rule 2.1: params (3*K+1,) → broadcast same spline to all elements
+Rule 2.2: params (3*K+1, N) → apply N different splines element-wise
+
+# Rule 1: Matrix input (N, D) - verified with all three scenarios
+Rule 1.1: params (3*K+1,) → broadcast same spline to all elements
+Rule 1.2: params (3*K+1, N) → N splines applied per row, broadcast over columns  
+Rule 1.3: params (3*K+1, N, D) → N×D splines applied element-wise
+
+# Distribution integration - verified with both scenarios
+Transformed distributions work with both broadcasting and per-dimension splines
 ```
 
 ### **2. Mathematical Property Tests**
@@ -275,14 +311,15 @@ end
 
 ## **🏆 Final Outcomes & Verification**
 
-### **✅ All Tests Passing**
-- **Constructor Tests:** Correct parameter dimensions for all cases
-- **Scalar Transforms:** Perfect invertibility and log-determinant properties  
-- **Vector Transforms:** Proper multi-feature handling
-- **Matrix Transforms:** Correct batching behavior
-- **Range Tests:** [0,1], [-4,4], [-3,3] all working
-- **Identity Tests:** Perfect analytical verification (error = 0.0)
-- **Distribution Tests:** Seamless integration with TransformedDistribution
+### **✅ All Broadcasting Tests Passing**
+- **Rule 3 (Scalar):** ✅ Single spline works, multi-dimensional params properly rejected
+- **Rule 2 (Vector):** ✅ Broadcasting and per-element splines work, excess dims rejected  
+- **Rule 1 (Matrix):** ✅ All broadcasting combinations work correctly, excess dims rejected
+- **Broadcasting Logic:** ✅ Size-1 dimensions broadcast correctly
+- **Mathematical Properties:** ✅ Log-determinant property holds across all scenarios
+- **Invertibility:** ✅ Perfect round-trip accuracy across all broadcasting cases
+- **Error Handling:** ✅ Proper dimension mismatch errors for invalid combinations
+- **Performance:** ✅ Efficient parameter slicing and minimal memory allocation
 
 ### **📊 Performance Characteristics**
 - **Numerical Precision:** Invertibility errors ≤ 1e-12 to 1e-17
@@ -332,9 +369,11 @@ FF(rand(1, 10))  # Batch processing
 | **Parameter Storage** | Processed (not raw) | Performance + separation of concerns |
 | **Constructor** | Single unified entry | Clarity + validation centralization |
 | **Reference Implementation** | Distrax (Python/JAX) | Proven numerical stability |
-| **Dimension Handling** | Explicit vector/matrix branches | Type safety + efficiency |
+| **Broadcasting System** | Comprehensive runtime rules | Flexibility + mathematical correctness |
+| **Dimension Validation** | Early error for invalid dims | Clear user feedback + fail-fast |
+| **Parameter Slicing** | Smart indexing with broadcasting | Efficient memory usage + correctness |
 | **Range Handling** | Early return for boundaries | Prevent domain errors |
-| **Testing Strategy** | Multi-range + analytical | Comprehensive verification |
+| **Testing Strategy** | Comprehensive broadcasting coverage | Verify all usage patterns |
 | **Scoping** | `let...end` blocks | Idiomatic Julia practices |
 
 ---

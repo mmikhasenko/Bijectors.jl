@@ -11,7 +11,7 @@ and addressing issues with multi-dimensional inputs and parameterization.
 [1] Durkan, C., Bekasov, A., Murray, I., & Papamakarios, G., Neural Spline Flows, CoRR, arXiv:1906.04032 [stat.ML], (2019).
 =#
 
-struct RationalQuadraticSpline{T, N} <: Bijector
+struct RationalQuadraticSpline{T} <: Bijector
     x_pos::T
     y_pos::T
     knot_slopes::T
@@ -21,8 +21,8 @@ struct RationalQuadraticSpline{T, N} <: Bijector
 
     function RationalQuadraticSpline(
         params::AbstractArray,
-        range_min::Real,
-        range_max::Real;
+        range_min::Real = zero(eltype(params)),
+        range_max::Real = one(eltype(params));
         boundary_slopes::Symbol = :unconstrained,
         min_bin_size::Real = 1e-4,
         min_knot_slope::Real = 1e-4,
@@ -32,23 +32,14 @@ struct RationalQuadraticSpline{T, N} <: Bijector
         @assert min_knot_slope > 0
 
         # Determine number of bins and features
-        P, D... = size(params)
+        P = size(params, 1)
         num_bins = (P - 1) ÷ 3
-        @assert 3 * num_bins + 1 == P "Last dimension of `params` must have size `3 * num_bins + 1`"
+        @assert 3 * num_bins + 1 == P "First dimension of `params` must have size `3 * num_bins + 1`"
 
-        # Extract unnormalized parameters
-        if ndims(params) == 1
-            unnormalized_bin_widths = params[1:num_bins]
-            unnormalized_bin_heights = params[num_bins+1:2*num_bins]
-            unnormalized_knot_slopes = params[2*num_bins+1:end]
-        else
-            unnormalized_bin_widths = params[1:num_bins, :]
-            unnormalized_bin_heights = params[num_bins+1:2*num_bins, :]
-            unnormalized_knot_slopes = params[2*num_bins+1:end, :]
-        end
-
-        # Helper for broadcasting pads
-        _pad_shape(pads) = reshape(pads, 1, size(pads)[2:end]...)
+        # Extract unnormalized parameters along first dimension
+        unnormalized_bin_widths = params[1:num_bins, ntuple(i -> :, ndims(params) - 1)...]
+        unnormalized_bin_heights = params[num_bins+1:2*num_bins, ntuple(i -> :, ndims(params) - 1)...]
+        unnormalized_knot_slopes = params[2*num_bins+1:end, ntuple(i -> :, ndims(params) - 1)...]
 
         # Normalize bin sizes
         range_size = range_max - range_min
@@ -64,14 +55,18 @@ struct RationalQuadraticSpline{T, N} <: Bijector
         x_pos_inter = cumsum(bin_widths; dims = 1)
         y_pos_inter = cumsum(bin_heights; dims = 1)
 
-        # Add boundaries
+        # Add boundaries - handle arbitrary dimensions
+        pad_dims = size(params)[2:end]
         if ndims(params) == 1
+            # Scalar parameter case
             x_pos = vcat([range_min], range_min .+ x_pos_inter[1:end-1], [range_max])
             y_pos = vcat([range_min], range_min .+ y_pos_inter[1:end-1], [range_max])
         else
-            pad_below = fill(range_min, (1, D...))
-            x_pos = vcat(pad_below, range_min .+ x_pos_inter[1:end-1, :], fill(range_max, (1, D...)))
-            y_pos = vcat(pad_below, range_min .+ y_pos_inter[1:end-1, :], fill(range_max, (1, D...)))
+            # Multi-dimensional parameter case
+            pad_below = fill(range_min, (1, pad_dims...))
+            pad_above = fill(range_max, (1, pad_dims...))
+            x_pos = vcat(pad_below, range_min .+ x_pos_inter[1:end-1, ntuple(i -> :, ndims(params) - 1)...], pad_above)
+            y_pos = vcat(pad_below, range_min .+ y_pos_inter[1:end-1, ntuple(i -> :, ndims(params) - 1)...], pad_above)
         end
 
         # _normalize_knot_slopes from distrax
@@ -87,18 +82,60 @@ struct RationalQuadraticSpline{T, N} <: Bijector
             knot_slopes = knot_slopes_
         elseif boundary_slopes === :identity
             if ndims(params) == 1
+                # Scalar parameter case
                 knot_slopes = vcat([one(eltype(params))], knot_slopes_[2:end-1], [one(eltype(params))])
             else
-                ones_pad = ones(eltype(params), (1, D...))
-                knot_slopes = vcat(ones_pad, knot_slopes_[2:end-1, :], ones_pad)
+                # Multi-dimensional parameter case
+                ones_pad = ones(eltype(params), (1, pad_dims...))
+                knot_slopes = vcat(ones_pad, knot_slopes_[2:end-1, ntuple(i -> :, ndims(params) - 1)...], ones_pad)
             end
         else
             throw(ArgumentError("Unknown boundary_slopes: $boundary_slopes"))
         end
 
         T = typeof(x_pos)
-        N_ = ndims(params) - 1
-        new{T, N_}(x_pos, y_pos, knot_slopes, range_min, range_max, boundary_slopes)
+        new{T}(x_pos, y_pos, knot_slopes, range_min, range_max, boundary_slopes)
+    end
+end
+
+# Helper function to validate broadcasting compatibility
+function _validate_broadcasting(params, x)
+    param_dims = size(params)[2:end]  # Skip first dimension (3*num_bins + 1)
+    x_dims = size(x)
+
+    if length(param_dims) > length(x_dims)
+        throw(DimensionMismatch("Parameter dimensions $(param_dims) exceed input dimensions $(x_dims). Cannot broadcast to preserve output shape."))
+    end
+
+    # Check if the trailing dimensions are compatible for broadcasting
+    for i in 1:length(param_dims)
+        if param_dims[i] != 1 && param_dims[i] != x_dims[i]
+            throw(DimensionMismatch("Parameter dimension $(param_dims[i]) incompatible with input dimension $(x_dims[i]) at axis $i"))
+        end
+    end
+
+    return true
+end
+
+# Helper function to get parameter slice for a given index
+function _get_param_slice(params, indices...)
+    if ndims(params) == 1
+        # Single spline for all elements
+        return view(params, :)
+    else
+        # Get appropriate slice based on broadcasting rules
+        param_indices = ntuple(ndims(params) - 1) do i
+            if i <= length(indices)
+                if size(params, i + 1) == 1
+                    1  # Broadcast dimension
+                else
+                    indices[i]  # Index into parameter dimension
+                end
+            else
+                1  # Default to 1 for missing dimensions
+            end
+        end
+        return view(params, :, param_indices...)
     end
 end
 
@@ -182,96 +219,130 @@ function _rational_quadratic_spline_inv(y, x_pos, y_pos, knot_slopes, range_min,
     return x, logdet_inv
 end
 
-# Scalar input, single spline
-function Bijectors.with_logabsdet_jacobian(b::RationalQuadraticSpline{<:AbstractVector}, x::Real)
-    _rational_quadratic_spline_fwd(x, b.x_pos, b.y_pos, b.knot_slopes, b.range_min, b.range_max)
+# Scalar input
+function Bijectors.with_logabsdet_jacobian(b::RationalQuadraticSpline, x::Real)
+    _validate_broadcasting(b.x_pos, x)
+    x_pos_slice = _get_param_slice(b.x_pos)
+    y_pos_slice = _get_param_slice(b.y_pos)
+    knot_slopes_slice = _get_param_slice(b.knot_slopes)
+    return _rational_quadratic_spline_fwd(x, x_pos_slice, y_pos_slice, knot_slopes_slice, b.range_min, b.range_max)
 end
-transform(b::RationalQuadraticSpline{<:AbstractVector}, x::Real) = _rational_quadratic_spline_fwd(x, b.x_pos, b.y_pos, b.knot_slopes, b.range_min, b.range_max)[1]
-logabsdetjac(b::RationalQuadraticSpline{<:AbstractVector}, x::Real) = _rational_quadratic_spline_fwd(x, b.x_pos, b.y_pos, b.knot_slopes, b.range_min, b.range_max)[2]
 
-# Multi-dim input, multi-spline
-function Bijectors.with_logabsdet_jacobian(b::RationalQuadraticSpline{<:AbstractMatrix}, x::AbstractVecOrMat)
+# Array input with comprehensive broadcasting
+function Bijectors.with_logabsdet_jacobian(b::RationalQuadraticSpline, x::AbstractArray)
+    _validate_broadcasting(b.x_pos, x)
+
     y = similar(x)
     logdet = similar(x)
 
-    # Broadcasting over features and batch
+    # Handle different input dimensions with broadcasting
     if ndims(x) == 1
-        # Vector case: each element uses its corresponding feature
+        # Vector case: x has dimensions (N,)
         for i in eachindex(x)
+            x_pos_slice = _get_param_slice(b.x_pos, i)
+            y_pos_slice = _get_param_slice(b.y_pos, i)
+            knot_slopes_slice = _get_param_slice(b.knot_slopes, i)
+
             y[i], logdet[i] = _rational_quadratic_spline_fwd(
-                x[i],
-                view(b.x_pos, :, i),
-                view(b.y_pos, :, i),
-                view(b.knot_slopes, :, i),
-                b.range_min,
-                b.range_max,
+                x[i], x_pos_slice, y_pos_slice, knot_slopes_slice, b.range_min, b.range_max,
             )
         end
-    else
-        # Matrix case: iterate over all elements, using column index for feature
-        for col in 1:size(x, 2), row in 1:size(x, 1)
-            y[row, col], logdet[row, col] = _rational_quadratic_spline_fwd(
-                x[row, col],
-                view(b.x_pos, :, col),
-                view(b.y_pos, :, col),
-                view(b.knot_slopes, :, col),
-                b.range_min,
-                b.range_max,
-            )
-        end
-    end
-
-    if ndims(x) == 1
         return y, sum(logdet)
-    else # Matrix
+
+    elseif ndims(x) == 2
+        # Matrix case: x has dimensions (N, D)
+        for col in 1:size(x, 2), row in 1:size(x, 1)
+            x_pos_slice = _get_param_slice(b.x_pos, row, col)
+            y_pos_slice = _get_param_slice(b.y_pos, row, col)
+            knot_slopes_slice = _get_param_slice(b.knot_slopes, row, col)
+
+            y[row, col], logdet[row, col] = _rational_quadratic_spline_fwd(
+                x[row, col], x_pos_slice, y_pos_slice, knot_slopes_slice, b.range_min, b.range_max,
+            )
+        end
         return y, vec(sum(logdet, dims = 2))
+
+    else
+        # Higher-dimensional arrays
+        for idx in CartesianIndices(x)
+            indices = Tuple(idx)
+            x_pos_slice = _get_param_slice(b.x_pos, indices...)
+            y_pos_slice = _get_param_slice(b.y_pos, indices...)
+            knot_slopes_slice = _get_param_slice(b.knot_slopes, indices...)
+
+            y[idx], logdet[idx] = _rational_quadratic_spline_fwd(
+                x[idx], x_pos_slice, y_pos_slice, knot_slopes_slice, b.range_min, b.range_max,
+            )
+        end
+
+        # Sum logdet over the last dimension to preserve input shape
+        return y, dropdims(sum(logdet, dims = ndims(logdet)), dims = ndims(logdet))
     end
 end
-transform(b::RationalQuadraticSpline, x::AbstractVecOrMat) = with_logabsdet_jacobian(b, x)[1]
-logabsdetjac(b::RationalQuadraticSpline, x::AbstractVecOrMat) = with_logabsdet_jacobian(b, x)[2]
+
+transform(b::RationalQuadraticSpline, x) = with_logabsdet_jacobian(b, x)[1]
+logabsdetjac(b::RationalQuadraticSpline, x) = with_logabsdet_jacobian(b, x)[2]
 
 
-# Inverse for scalar input, single spline
-function Bijectors.with_logabsdet_jacobian(ib::Inverse{<:RationalQuadraticSpline{<:AbstractVector}}, y::Real)
+# Inverse for scalar input
+function Bijectors.with_logabsdet_jacobian(ib::Inverse{<:RationalQuadraticSpline}, y::Real)
     b = ib.orig
-    _rational_quadratic_spline_inv(y, b.x_pos, b.y_pos, b.knot_slopes, b.range_min, b.range_max)
+    _validate_broadcasting(b.x_pos, y)
+    x_pos_slice = _get_param_slice(b.x_pos)
+    y_pos_slice = _get_param_slice(b.y_pos)
+    knot_slopes_slice = _get_param_slice(b.knot_slopes)
+    return _rational_quadratic_spline_inv(y, x_pos_slice, y_pos_slice, knot_slopes_slice, b.range_min, b.range_max)
 end
 
-# Inverse for multi-dim input, multi-spline
-function Bijectors.with_logabsdet_jacobian(ib::Inverse{<:RationalQuadraticSpline{<:AbstractMatrix}}, y::AbstractVecOrMat)
+# Inverse for array input with comprehensive broadcasting
+function Bijectors.with_logabsdet_jacobian(ib::Inverse{<:RationalQuadraticSpline}, y::AbstractArray)
     b = ib.orig
+    _validate_broadcasting(b.x_pos, y)
+
     x = similar(y)
     logdet = similar(y)
 
+    # Handle different input dimensions with broadcasting
     if ndims(y) == 1
-        # Vector case: each element uses its corresponding feature
+        # Vector case: y has dimensions (N,)
         for i in eachindex(y)
-            x[i], logdet[i] = _rational_quadratic_spline_inv(
-                y[i],
-                view(b.x_pos, :, i),
-                view(b.y_pos, :, i),
-                view(b.knot_slopes, :, i),
-                b.range_min,
-                b.range_max,
-            )
-        end
-    else
-        # Matrix case: iterate over all elements, using column index for feature
-        for col in 1:size(y, 2), row in 1:size(y, 1)
-            x[row, col], logdet[row, col] = _rational_quadratic_spline_inv(
-                y[row, col],
-                view(b.x_pos, :, col),
-                view(b.y_pos, :, col),
-                view(b.knot_slopes, :, col),
-                b.range_min,
-                b.range_max,
-            )
-        end
-    end
+            x_pos_slice = _get_param_slice(b.x_pos, i)
+            y_pos_slice = _get_param_slice(b.y_pos, i)
+            knot_slopes_slice = _get_param_slice(b.knot_slopes, i)
 
-    if ndims(y) == 1
+            x[i], logdet[i] = _rational_quadratic_spline_inv(
+                y[i], x_pos_slice, y_pos_slice, knot_slopes_slice, b.range_min, b.range_max,
+            )
+        end
         return x, sum(logdet)
-    else # Matrix
+
+    elseif ndims(y) == 2
+        # Matrix case: y has dimensions (N, D)
+        for col in 1:size(y, 2), row in 1:size(y, 1)
+            x_pos_slice = _get_param_slice(b.x_pos, row, col)
+            y_pos_slice = _get_param_slice(b.y_pos, row, col)
+            knot_slopes_slice = _get_param_slice(b.knot_slopes, row, col)
+
+            x[row, col], logdet[row, col] = _rational_quadratic_spline_inv(
+                y[row, col], x_pos_slice, y_pos_slice, knot_slopes_slice, b.range_min, b.range_max,
+            )
+        end
         return x, vec(sum(logdet, dims = 2))
+
+    else
+        # Higher-dimensional arrays
+        for idx in CartesianIndices(y)
+            indices = Tuple(idx)
+            x_pos_slice = _get_param_slice(b.x_pos, indices...)
+            y_pos_slice = _get_param_slice(b.y_pos, indices...)
+            knot_slopes_slice = _get_param_slice(b.knot_slopes, indices...)
+
+            x[idx], logdet[idx] = _rational_quadratic_spline_inv(
+                y[idx], x_pos_slice, y_pos_slice, knot_slopes_slice, b.range_min, b.range_max,
+            )
+        end
+
+        # Sum logdet over the last dimension to preserve input shape
+        return x, dropdims(sum(logdet, dims = ndims(logdet)), dims = ndims(logdet))
     end
 end

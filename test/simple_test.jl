@@ -61,81 +61,178 @@ println("logdet_scalar + logdet_inv_scalar = $(logdet_scalar + logdet_inv_scalar
 
 println("\n--- Vector Transform Tests ---")
 K = 10
-D_vec = 5
-params_vec = randn(3 * K + 1, D_vec)
-b_vec = RationalQuadraticSpline(params_vec, -4.0, 4.0)
+N_vec = 5
 
-x_vec = randn(D_vec)
-y_vec, logdet_vec = with_logabsdet_jacobian(b_vec, x_vec)
+# Rule 2.1: x (N,), params (3*K+1,) - broadcast same spline
+println("\nRule 2.1: x (N,), params (3*K+1,) - broadcast same spline")
+let
+    params_broadcast = randn(3 * K + 1)
+    b_broadcast = RationalQuadraticSpline(params_broadcast, -4.0, 4.0)
 
-println("y_vec isa AbstractVector: ", y_vec isa AbstractVector)
-println("size(y_vec) == (D_vec,): ", size(y_vec) == (D_vec,))
-println("logdet_vec isa Real: ", logdet_vec isa Real)
+    x_vec = randn(N_vec)
+    y_vec, logdet_vec = with_logabsdet_jacobian(b_broadcast, x_vec)
 
-# Invertibility
-println("\nInvertibility:")
-x_recon_vec = transform(inverse(b_vec), y_vec)
-println("x_recon_vec ≈ x_vec: ", isapprox(x_recon_vec, x_vec))
+    println("y_vec isa AbstractVector: ", y_vec isa AbstractVector)
+    println("size(y_vec) == (N_vec,): ", size(y_vec) == (N_vec,))
+    println("logdet_vec isa Real: ", logdet_vec isa Real)
 
-# Logdet property
-println("\nLogdet property:")
-logdet_inv_vec = logabsdetjac(inverse(b_vec), y_vec)
-println("logdet_vec + logdet_inv_vec ≈ 0.0: ", isapprox(logdet_vec + logdet_inv_vec, 0.0, atol = 1e-6))
-println("logdet_vec + logdet_inv_vec = $(logdet_vec + logdet_inv_vec)")
+    # Invertibility
+    x_recon_vec = transform(inverse(b_broadcast), y_vec)
+    println("Invertible: ", isapprox(x_recon_vec, x_vec))
+
+    # Logdet property
+    logdet_inv_vec = logabsdetjac(inverse(b_broadcast), y_vec)
+    println("LogDet property: ", isapprox(logdet_vec + logdet_inv_vec, 0.0, atol = 1e-6))
+end
+
+# Rule 2.2: x (N,), params (3*K+1, N) - N splines applied
+println("\nRule 2.2: x (N,), params (3*K+1, N) - N splines applied")
+let
+    params_n_splines = randn(3 * K + 1, N_vec)
+    b_n_splines = RationalQuadraticSpline(params_n_splines, -4.0, 4.0)
+
+    x_vec = randn(N_vec)
+    y_vec, logdet_vec = with_logabsdet_jacobian(b_n_splines, x_vec)
+
+    println("y_vec isa AbstractVector: ", y_vec isa AbstractVector)
+    println("size(y_vec) == (N_vec,): ", size(y_vec) == (N_vec,))
+    println("logdet_vec isa Real: ", logdet_vec isa Real)
+
+    # Invertibility
+    x_recon_vec = transform(inverse(b_n_splines), y_vec)
+    println("Invertible: ", isapprox(x_recon_vec, x_vec))
+
+    # Logdet property
+    logdet_inv_vec = logabsdetjac(inverse(b_n_splines), y_vec)
+    println("LogDet property: ", isapprox(logdet_vec + logdet_inv_vec, 0.0, atol = 1e-6))
+end
 
 
 println("\n--- Matrix Transform Tests ---")
 K = 10
-D_mat = 5
-batch_size = 2
-params_mat = randn(3 * K + 1, D_mat)
-b_mat = RationalQuadraticSpline(params_mat, -4.0, 4.0)
+N_mat = 3  # First dimension (batch size)
+D_mat = 4  # Second dimension (feature size)
 
-x_mat = randn(batch_size, D_mat)
-y_mat = transform(b_mat, x_mat)
-logdet_mat = logabsdetjac(b_mat, x_mat)
+# Rule 1.1: x (N, D), params (3*K+1,) - broadcast same spline
+println("\nRule 1.1: x (N, D), params (3*K+1,) - broadcast same spline")
+let
+    params_broadcast = randn(3 * K + 1)
+    b_broadcast = RationalQuadraticSpline(params_broadcast, -4.0, 4.0)
 
-println("size(y_mat) == (batch_size, D_mat): ", size(y_mat) == (batch_size, D_mat))
-println("size(logdet_mat) == (batch_size,): ", size(logdet_mat) == (batch_size,))
+    x_mat = randn(N_mat, D_mat)
+    y_mat = transform(b_broadcast, x_mat)
+    logdet_mat = logabsdetjac(b_broadcast, x_mat)
 
-# Invertibility
-println("\nInvertibility:")
-x_recon_mat = transform(inverse(b_mat), y_mat)
-println("x_recon_mat ≈ x_mat: ", isapprox(x_recon_mat, x_mat))
+    println("size(y_mat) == (N_mat, D_mat): ", size(y_mat) == (N_mat, D_mat))
+    println("size(logdet_mat) == (N_mat,): ", size(logdet_mat) == (N_mat,))
 
-# Logdet property
-println("\nLogdet property:")
-logdet_inv_mat = logabsdetjac(inverse(b_mat), y_mat)
-println("logdet_mat + logdet_inv_mat ≈ zeros(batch_size): ", isapprox(logdet_mat + logdet_inv_mat, zeros(batch_size), atol = 1e-6))
-println("logdet_mat + logdet_inv_mat = $(logdet_mat + logdet_inv_mat)")
+    # Invertibility
+    x_recon_mat = transform(inverse(b_broadcast), y_mat)
+    println("Invertible: ", isapprox(x_recon_mat, x_mat))
+
+    # Logdet property
+    logdet_inv_mat = logabsdetjac(inverse(b_broadcast), y_mat)
+    println("LogDet property: ", isapprox(logdet_mat + logdet_inv_mat, zeros(N_mat), atol = 1e-6))
+end
+
+# Rule 1.2: x (N, D), params (3*K+1, N) - N splines, broadcast over D
+println("\nRule 1.2: x (N, D), params (3*K+1, N) - N splines, broadcast over D")
+let
+    params_n_splines = randn(3 * K + 1, N_mat)
+    b_n_splines = RationalQuadraticSpline(params_n_splines, -4.0, 4.0)
+
+    x_mat = randn(N_mat, D_mat)
+    y_mat = transform(b_n_splines, x_mat)
+    logdet_mat = logabsdetjac(b_n_splines, x_mat)
+
+    println("size(y_mat) == (N_mat, D_mat): ", size(y_mat) == (N_mat, D_mat))
+    println("size(logdet_mat) == (N_mat,): ", size(logdet_mat) == (N_mat,))
+
+    # Invertibility
+    x_recon_mat = transform(inverse(b_n_splines), y_mat)
+    println("Invertible: ", isapprox(x_recon_mat, x_mat))
+
+    # Logdet property
+    logdet_inv_mat = logabsdetjac(inverse(b_n_splines), y_mat)
+    println("LogDet property: ", isapprox(logdet_mat + logdet_inv_mat, zeros(N_mat), atol = 1e-6))
+end
+
+# Rule 1.3: x (N, D), params (3*K+1, N, D) - N×D splines applied correctly
+println("\nRule 1.3: x (N, D), params (3*K+1, N, D) - N×D splines applied correctly")
+let
+    params_nd_splines = randn(3 * K + 1, N_mat, D_mat)
+    b_nd_splines = RationalQuadraticSpline(params_nd_splines, -4.0, 4.0)
+
+    x_mat = randn(N_mat, D_mat)
+    y_mat = transform(b_nd_splines, x_mat)
+    logdet_mat = logabsdetjac(b_nd_splines, x_mat)
+
+    println("size(y_mat) == (N_mat, D_mat): ", size(y_mat) == (N_mat, D_mat))
+    println("size(logdet_mat) == (N_mat,): ", size(logdet_mat) == (N_mat,))
+
+    # Invertibility
+    x_recon_mat = transform(inverse(b_nd_splines), y_mat)
+    println("Invertible: ", isapprox(x_recon_mat, x_mat))
+
+    # Logdet property
+    logdet_inv_mat = logabsdetjac(inverse(b_nd_splines), y_mat)
+    println("LogDet property: ", isapprox(logdet_mat + logdet_inv_mat, zeros(N_mat), atol = 1e-6))
+end
 
 println("\n--- Distribution Transform Tests ---")
 K = 10
 D_dist = 2
-params_dist = randn(3 * K + 1, D_dist)
-b_dist = RationalQuadraticSpline(params_dist, -4.0, 4.0, boundary_slopes = :identity)
 
-d_dist = MvNormal(zeros(D_dist), ones(D_dist))
-td_dist = transformed(d_dist, b_dist)
+# Test both broadcasting scenarios for distributions
+println("\nRule 2.1: Distribution with broadcast params")
+let
+    params_broadcast = randn(3 * K + 1)  # Same spline for all dimensions
+    b_broadcast = RationalQuadraticSpline(params_broadcast, -4.0, 4.0, boundary_slopes = :identity)
 
-println("td_dist isa Distribution: ", td_dist isa Distribution)
+    d_dist = MvNormal(zeros(D_dist), ones(D_dist))
+    td_dist = transformed(d_dist, b_broadcast)
 
-# Test sampling
-println("\nSampling:")
-y_sample = rand(td_dist, 10)
-println("size(y_sample) == (D_dist, 10): ", size(y_sample) == (D_dist, 10))
+    println("td_dist isa Distribution: ", td_dist isa Distribution)
 
-# Test logpdf
-println("\nLogpdf:")
-x_dist = randn(D_dist)
-y_dist = transform(b_dist, x_dist)
+    # Test sampling
+    y_sample = rand(td_dist, 10)
+    println("size(y_sample) == (D_dist, 10): ", size(y_sample) == (D_dist, 10))
 
-lp_x = logpdf(d_dist, x_dist)
-ladj = logabsdetjac(b_dist, x_dist)
-lp_y = logpdf(td_dist, y_dist)
+    # Test logpdf
+    x_dist = randn(D_dist)
+    y_dist = transform(b_broadcast, x_dist)
 
-println("logpdf(td_dist, y_dist) ≈ lp_x - ladj: ", isapprox(lp_y, lp_x - ladj))
-println("logpdf(td_dist, y_dist): $lp_y, lp_x - ladj: $(lp_x - ladj)")
+    lp_x = logpdf(d_dist, x_dist)
+    ladj = logabsdetjac(b_broadcast, x_dist)
+    lp_y = logpdf(td_dist, y_dist)
+
+    println("LogPDF property: ", isapprox(lp_y, lp_x - ladj))
+end
+
+println("\nRule 2.2: Distribution with per-dimension params")
+let
+    params_per_dim = randn(3 * K + 1, D_dist)  # Different spline per dimension
+    b_per_dim = RationalQuadraticSpline(params_per_dim, -4.0, 4.0, boundary_slopes = :identity)
+
+    d_dist = MvNormal(zeros(D_dist), ones(D_dist))
+    td_dist = transformed(d_dist, b_per_dim)
+
+    println("td_dist isa Distribution: ", td_dist isa Distribution)
+
+    # Test sampling
+    y_sample = rand(td_dist, 10)
+    println("size(y_sample) == (D_dist, 10): ", size(y_sample) == (D_dist, 10))
+
+    # Test logpdf
+    x_dist = randn(D_dist)
+    y_dist = transform(b_per_dim, x_dist)
+
+    lp_x = logpdf(d_dist, x_dist)
+    ladj = logabsdetjac(b_per_dim, x_dist)
+    lp_y = logpdf(td_dist, y_dist)
+
+    println("LogPDF property: ", isapprox(lp_y, lp_x - ladj))
+end
 
 println("\n--- [0,1] Range Tests ---")
 K_01 = 5
@@ -243,28 +340,4 @@ for x in bin_test_points
     println("  x=$x -> y=$(round(y, digits=4)), logdet=$(round(logdet, digits=4))")
 end
 
-# Extra advanced tests
 
-# FF = RationalQuadraticSpline(rand(31, 10), 0, 1)
-# FF(rand(1, 10))
-
-# const amask = Bijectors.PartitionMask(11, [1], 1:10) # acts on 1.
-
-# partitioned = Bijectors.partition(amask, rand(11, 55))
-# @assert partitioned[2] |> size == (10, 55)
-
-# layer = Bijectors.Coupling(amask) do z
-#     RationalQuadraticSpline(z, 0.0, 1.0)
-# end
-
-# layer(rand(11, 55))
-
-
-# using Plots
-# theme(:boxed)
-
-# ft = RationalQuadraticSpline([0.4, 0.6, 0.4, 0.6, 1.0, 0.01, 5.0], 0, 1)
-# let
-#     plot(x -> ft(x), 0, 1)
-#     scatter!(ft.x_pos, ft.y_pos)
-# end
