@@ -1,6 +1,6 @@
 using Test
 using Bijectors
-using Bijectors: RationalQuadraticSpline
+using Bijectors: TorRationalQuadraticSpline
 using LogExpFunctions
 
 @testset "RationalQuadraticSpline" begin

@@ -1,277 +1,367 @@
+"""
+    TorRationalQuadraticSpline{T} <: Bijector
 
-using LogExpFunctions
-using NNlib
-#=
 Implementation of the Rational Quadratic Spline flow [1].
-Reference implementation: https://github.com/deepmind/distrax/blob/master/distrax/_src/bijectors/rational_quadratic_spline.py
-This implementation is a rewrite of the original Julia version, adhering more closely to the reference
-and addressing issues with multi-dimensional inputs and parameterization.
-- Feature dimensions are expected to be the last dimension of the input array.
-- The bijector can be parameterized by a vector (for a single spline) or a matrix (for multiple splines, one for each feature).
-[1] Durkan, C., Bekasov, A., Murray, I., & Papamakarios, G., Neural Spline Flows, CoRR, arXiv:1906.04032 [stat.ML], (2019).
-=#
 
-struct RationalQuadraticSpline{T, N} <: Bijector
-    x_pos::T
-    y_pos::T
-    knot_slopes::T
-    range_min::Float64
-    range_max::Float64
-    boundary_slopes::Symbol
+- Outside of the interval `[minimum(widths), maximum(widths)]`, this mapping is given 
+  by the identity map. 
+- Inside the interval it's given by a monotonic spline (i.e. monotonic polynomials 
+  connected at intermediate points) with endpoints fixed so as to continuously transform
+  into the identity map.
 
-    function RationalQuadraticSpline(
-        params::AbstractArray,
-        range_min::Real,
-        range_max::Real;
-        boundary_slopes::Symbol = :unconstrained,
-        min_bin_size::Real = 1e-4,
-        min_knot_slope::Real = 1e-4,
+For the sake of efficiency, there are separate implementations for 0-dimensional and
+1-dimensional inputs.
+
+# Notes
+There are two constructors for `TorRationalQuadraticSpline`:
+- `TorRationalQuadraticSpline(widths, heights, derivatives)`: it is assumed that `widths`, 
+`heights`, and `derivatives` satisfy the constraints that makes this a valid bijector, i.e.
+  - `widths`: monotonically increasing and `length(widths) == K`,
+  - `heights`: monotonically increasing and `length(heights) == K`,
+  - `derivatives`: non-negative and `derivatives[1] == derivatives[end] == 1`.
+- `TorRationalQuadraticSpline(widths, heights, derivatives, B)`: other than than the lengths, 
+    no assumptions are made on parameters. Therefore we will transform the parameters s.t.:
+  - `widths_new` ∈ [-B, B]ᴷ⁺¹, where `K == length(widths)`,
+  - `heights_new` ∈ [-B, B]ᴷ⁺¹, where `K == length(heights)`,
+  - `derivatives_new` ∈ (0, ∞)ᴷ⁺¹ with `derivatives_new[1] == derivates_new[end] == 1`, 
+    where `(K - 1) == length(derivatives)`.
+
+# Examples
+## Univariate
+```jldoctest
+julia> using StableRNGs: StableRNG; rng = StableRNG(42);  # For reproducibility.
+
+julia> using Bijectors: TorRationalQuadraticSpline
+
+julia> K = 3; B = 2;
+
+julia> # Monotonic spline on '[-B, B]' with `K` intermediate knots/"connection points".
+       b = TorRationalQuadraticSpline(randn(rng, K), randn(rng, K), randn(rng, K - 1), B);
+
+julia> b(0.5) # inside of `[-B, B]` → transformed
+1.1943325397834206
+
+julia> b(5.) # outside of `[-B, B]` → not transformed
+5.0
+
+julia> b = TorRationalQuadraticSpline(b.widths, b.heights, b.derivatives);
+
+julia> b(0.5) # inside of `[-B, B]` → transformed
+1.1943325397834206
+
+julia> d = 2; K = 3; B = 2;
+
+julia> b = TorRationalQuadraticSpline(randn(rng, d, K), randn(rng, d, K), randn(rng, d, K - 1), B);
+
+julia> b([-1., 1.])
+2-element Vector{Float64}:
+ -1.5660106244288925
+  0.5384702734738573
+
+julia> b([-5., 5.])
+2-element Vector{Float64}:
+ -5.0
+  5.0
+
+julia> b([-1., 5.])
+2-element Vector{Float64}:
+ -1.5660106244288925
+  5.0
+```
+
+# References
+[1] Durkan, C., Bekasov, A., Murray, I., & Papamakarios, G., Neural Spline Flows, CoRR, arXiv:1906.04032 [stat.ML],  (2019). 
+"""
+struct TorRationalQuadraticSpline{T} <: Bijector
+    widths::T      # K widths
+    heights::T     # K heights
+    derivatives::T # K derivatives, with endpoints being ones
+
+    function TorRationalQuadraticSpline(
+        widths::T, heights::T, derivatives::T,
+    ) where {T <: AbstractVector}
+        # TODO: add a `NoArgCheck` type and argument so we can circumvent if we want        
+        @assert length(widths) == length(heights) == length(derivatives)
+        @assert all(derivatives .> 0) "derivatives need to be positive"
+
+        return new{T}(widths, heights, derivatives)
+    end
+
+    function TorRationalQuadraticSpline(
+        widths::T, heights::T, derivatives::T,
+    ) where {T <: AbstractMatrix}
+        @assert size(widths, 2) == size(heights, 2) == size(derivatives, 2)
+        @assert all(derivatives .> 0) "derivatives need to be positive"
+        return new{T}(widths, heights, derivatives)
+    end
+end
+
+function TorRationalQuadraticSpline(
+    widths::A, heights::A, derivatives::A, B::T2,
+) where {T1, T2, A <: AbstractVector{T1}}
+    return TorRationalQuadraticSpline(
+        cumsum(vcat([zero(T1)], LogExpFunctions.softmax(widths))) .* (2 * B) .- B,
+        cumsum(vcat([zero(T1)], LogExpFunctions.softmax(heights))) .* (2 * B) .- B,
+        vcat([one(T1)], LogExpFunctions.log1pexp.(derivatives), [one(T1)]),
     )
-        @assert range_min < range_max
-        @assert min_bin_size > 0
-        @assert min_knot_slope > 0
-
-        # Determine number of bins and features
-        P, D... = size(params)
-        num_bins = (P - 1) ÷ 3
-        @assert 3 * num_bins + 1 == P "Last dimension of `params` must have size `3 * num_bins + 1`"
-
-        # Extract unnormalized parameters
-        if ndims(params) == 1
-            unnormalized_bin_widths = params[1:num_bins]
-            unnormalized_bin_heights = params[num_bins+1:2*num_bins]
-            unnormalized_knot_slopes = params[2*num_bins+1:end]
-        else
-            unnormalized_bin_widths = params[1:num_bins, :]
-            unnormalized_bin_heights = params[num_bins+1:2*num_bins, :]
-            unnormalized_knot_slopes = params[2*num_bins+1:end, :]
-        end
-
-        # Helper for broadcasting pads
-        _pad_shape(pads) = reshape(pads, 1, size(pads)[2:end]...)
-
-        # Normalize bin sizes
-        range_size = range_max - range_min
-
-        # _normalize_bin_sizes from distrax
-        bin_widths = LogExpFunctions.softmax(unnormalized_bin_widths; dims = 1)
-        bin_widths = bin_widths .* (range_size - num_bins * min_bin_size) .+ min_bin_size
-
-        bin_heights = LogExpFunctions.softmax(unnormalized_bin_heights; dims = 1)
-        bin_heights = bin_heights .* (range_size - num_bins * min_bin_size) .+ min_bin_size
-
-        # Compute bin positions
-        x_pos_inter = cumsum(bin_widths; dims = 1)
-        y_pos_inter = cumsum(bin_heights; dims = 1)
-
-        # Add boundaries
-        if ndims(params) == 1
-            x_pos = vcat([range_min], range_min .+ x_pos_inter[1:end-1], [range_max])
-            y_pos = vcat([range_min], range_min .+ y_pos_inter[1:end-1], [range_max])
-        else
-            pad_below = fill(range_min, (1, D...))
-            x_pos = vcat(pad_below, range_min .+ x_pos_inter[1:end-1, :], fill(range_max, (1, D...)))
-            y_pos = vcat(pad_below, range_min .+ y_pos_inter[1:end-1, :], fill(range_max, (1, D...)))
-        end
-
-        # _normalize_knot_slopes from distrax
-        # The offset is such that the normalized knot slope will be equal to 1
-        # whenever the unnormalized knot slope is equal to 0.
-        if min_knot_slope >= 1.0
-            throw(ArgumentError("The minimum knot slope must be less than 1; got $(min_knot_slope)."))
-        end
-        offset = log(exp(1.0 - min_knot_slope) - 1.0)
-        knot_slopes_ = LogExpFunctions.softplus.(unnormalized_knot_slopes .+ offset) .+ min_knot_slope
-
-        if boundary_slopes === :unconstrained
-            knot_slopes = knot_slopes_
-        elseif boundary_slopes === :identity
-            if ndims(params) == 1
-                knot_slopes = vcat([one(eltype(params))], knot_slopes_[2:end-1], [one(eltype(params))])
-            else
-                ones_pad = ones(eltype(params), (1, D...))
-                knot_slopes = vcat(ones_pad, knot_slopes_[2:end-1, :], ones_pad)
-            end
-        else
-            throw(ArgumentError("Unknown boundary_slopes: $boundary_slopes"))
-        end
-
-        T = typeof(x_pos)
-        N_ = ndims(params) - 1
-        new{T, N_}(x_pos, y_pos, knot_slopes, range_min, range_max, boundary_slopes)
-    end
 end
 
+function TorRationalQuadraticSpline(
+    widths::A, heights::A, derivatives::A, B::T2,
+) where {T1, T2, A <: AbstractMatrix{T1}}
+    ws = hcat(zeros(T1, size(widths, 1)), LogExpFunctions.softmax(widths; dims = 2))
+    hs = hcat(zeros(T1, size(widths, 1)), LogExpFunctions.softmax(heights; dims = 2))
+    ds = hcat(
+        ones(T1, size(widths, 1)),
+        LogExpFunctions.log1pexp.(derivatives),
+        ones(T1, size(widths, 1)),
+    )
 
-
-# Core forward transformation for a scalar
-function _rational_quadratic_spline_fwd(x, x_pos, y_pos, knot_slopes, range_min, range_max)
-    # Handle values outside the range first
-    if x <= range_min || x >= range_max
-        return x, 0.0
-    end
-
-    # Search for the correct bin
-    # This is faster than searchsortedfirst on GPU
-    # Use of `x .>` instead of `>=` ensures that we find the bin `x` is in, even at boundaries.
-    k = sum(x .> x_pos[2:end-1]) + 1
-
-    # Parameters for the selected bin
-    x_k = x_pos[k]
-    x_kp1 = x_pos[k+1]
-    y_k = y_pos[k]
-    y_kp1 = y_pos[k+1]
-    s_k = knot_slopes[k]
-    s_kp1 = knot_slopes[k+1]
-
-    # Normalize x to [0, 1]
-    z = (x - x_k) / (x_kp1 - x_k)
-
-    # Transformation
-    bin_height = y_kp1 - y_k
-    bin_width = x_kp1 - x_k
-    bin_slope = bin_height / bin_width
-
-    slopes_term = s_kp1 + s_k - 2 * bin_slope
-    numerator = bin_height * (bin_slope * z^2 + s_k * z * (1 - z))
-    denominator = bin_slope + slopes_term * z * (1 - z)
-    y = y_k + numerator / denominator
-
-    # Log-determinant of the Jacobian
-    logdet = 2 * log(bin_slope) + log(s_kp1 * z^2 + 2 * bin_slope * z * (1 - z) + s_k * (1 - z)^2) - 2 * log(denominator)
-
-    return y, logdet
+    return TorRationalQuadraticSpline(
+        (2 * B) .* cumsum(ws; dims = 2) .- B, (2 * B) .* cumsum(hs; dims = 2) .- B, ds,
+    )
 end
 
+##########################
+### Forward evaluation ###
+##########################
+function rqs_univariate(widths, heights, derivatives, x::Real)
+    T = promote_type(eltype(widths), eltype(heights), eltype(derivatives), eltype(x))
 
-# Core inverse transformation for a scalar
-function _rational_quadratic_spline_inv(y, x_pos, y_pos, knot_slopes, range_min, range_max)
-    # Handle values outside the range first
-    if y <= range_min || y >= range_max
-        return y, 0.0
+    # We're working on [-B, B] and `widths[end]` is `B`
+    if (x ≤ -widths[end]) || (x ≥ widths[end])
+        return one(T) * x
     end
 
-    k = sum(y .> y_pos[2:end-1]) + 1
+    K = length(widths)
 
-    x_k, x_kp1 = x_pos[k], x_pos[k+1]
-    y_k, y_kp1 = y_pos[k], y_pos[k+1]
-    s_k, s_kp1 = knot_slopes[k], knot_slopes[k+1]
+    # Find which bin `x` is in; subtract 1 because `searchsortedfirst` returns idx of ≥ not ≤
+    k = searchsortedfirst(widths, x) - 1
 
-    bin_width = x_kp1 - x_k
-    bin_height = y_kp1 - y_k
-    bin_slope = bin_height / bin_width
+    # Width
+    # If k == 0 then we should put it in the bin `[-B, widths[1]]`
+    w_k = (k == 0) ? -widths[end] : widths[k]
+    w = widths[k+1] - w_k
 
-    w = (y - y_k) / bin_height
+    # Slope
+    h_k = (k == 0) ? -heights[end] : heights[k]
+    Δy = heights[k+1] - h_k
 
-    slopes_term = s_kp1 + s_k - 2 * bin_slope
+    s = Δy / w
+    ξ = (x - w_k) / w
 
-    c = -bin_slope * w
-    b = s_k - slopes_term * w
-    a = bin_slope - b
+    # Derivatives at knot-points
+    # Note that we have (K - 1) knot-points, not K
+    d_k = (k == 0) ? one(T) : derivatives[k]
+    d_kplus1 = (k == K - 1) ? one(T) : derivatives[k+1]
 
-    # Numerically stable quadratic root finder
-    discr = b^2 - 4 * a * c
-    # Due to floating point errors, discr can be slightly negative
-    z = -2 * c / (b + sqrt(max(discr, 0.0)))
+    # Eq. (14)
+    numerator = Δy * (s * ξ^2 + d_k * ξ * (1 - ξ))
+    denominator = s + (d_kplus1 + d_k - 2s) * ξ * (1 - ξ)
+    g = h_k + numerator / denominator
 
-    x = z * bin_width + x_k
-
-    # Log-determinant of the Jacobian for the inverse
-    logdet_inv = -(2 * log(bin_slope) + log(s_kp1 * z^2 + 2 * bin_slope * z * (1 - z) + s_k * (1 - z)^2) - 2 * log(bin_slope + slopes_term * z * (1 - z)))
-
-    return x, logdet_inv
+    return g
 end
 
-# Scalar input, single spline
-function Bijectors.with_logabsdet_jacobian(b::RationalQuadraticSpline{<:AbstractVector}, x::Real)
-    _rational_quadratic_spline_fwd(x, b.x_pos, b.y_pos, b.knot_slopes, b.range_min, b.range_max)
+# univariate
+function transform(b::TorRationalQuadraticSpline{<:AbstractVector}, x::Real)
+    return rqs_univariate(b.widths, b.heights, b.derivatives, x)
 end
-transform(b::RationalQuadraticSpline{<:AbstractVector}, x::Real) = _rational_quadratic_spline_fwd(x, b.x_pos, b.y_pos, b.knot_slopes, b.range_min, b.range_max)[1]
-logabsdetjac(b::RationalQuadraticSpline{<:AbstractVector}, x::Real) = _rational_quadratic_spline_fwd(x, b.x_pos, b.y_pos, b.knot_slopes, b.range_min, b.range_max)[2]
 
-# Multi-dim input, multi-spline
-function Bijectors.with_logabsdet_jacobian(b::RationalQuadraticSpline{<:AbstractMatrix}, x::AbstractVecOrMat)
-    y = similar(x)
-    logdet = similar(x)
+# multivariate
+# TODO: Improve.
+function transform(b::TorRationalQuadraticSpline{<:AbstractMatrix}, x::AbstractVector)
+    return [
+        rqs_univariate(b.widths[i, :], b.heights[i, :], b.derivatives[i, :], x[i]) for
+        i in 1:length(x)
+    ]
+end
 
-    # Broadcasting over features and batch
-    if ndims(x) == 1
-        # Vector case: each element uses its corresponding feature
-        for i in eachindex(x)
-            y[i], logdet[i] = _rational_quadratic_spline_fwd(
-                x[i],
-                view(b.x_pos, :, i),
-                view(b.y_pos, :, i),
-                view(b.knot_slopes, :, i),
-                b.range_min,
-                b.range_max,
-            )
-        end
-    else
-        # Matrix case: iterate over all elements, using column index for feature
-        for col in 1:size(x, 2), row in 1:size(x, 1)
-            y[row, col], logdet[row, col] = _rational_quadratic_spline_fwd(
-                x[row, col],
-                view(b.x_pos, :, col),
-                view(b.y_pos, :, col),
-                view(b.knot_slopes, :, col),
-                b.range_min,
-                b.range_max,
-            )
-        end
+##########################
+### Inverse evaluation ###
+##########################
+function rqs_univariate_inverse(widths, heights, derivatives, y::Real)
+    T = promote_type(eltype(widths), eltype(heights), eltype(derivatives), eltype(y))
+
+    if (y ≤ -heights[end]) || (y ≥ heights[end])
+        return one(T) * y
     end
 
-    if ndims(x) == 1
-        return y, sum(logdet)
-    else # Matrix
-        return y, vec(sum(logdet, dims = 2))
-    end
+    K = length(widths)
+    k = searchsortedfirst(heights, y) - 1
+
+    # Width
+    w_k = (k == 0) ? -widths[end] : widths[k]
+    w = widths[k+1] - w_k
+
+    # Slope
+    h_k = (k == 0) ? -heights[end] : heights[k]
+    Δy = heights[k+1] - h_k
+
+    # Recurring quantities
+    s = Δy / w
+    d_k = (k == 0) ? one(T) : derivatives[k]
+    d_kplus1 = (k == K - 1) ? one(T) : derivatives[k+1]
+    ds = d_kplus1 + d_k - 2 * s
+
+    # Eq. (25)
+    a1 = Δy * (s - d_k) + (y - h_k) * ds
+    # Eq. (26)
+    a2 = Δy * d_k - (y - h_k) * ds
+    # Eq. (27)
+    a3 = -s * (y - h_k)
+
+    # Eq. (24). There's a mistake in the paper; says `x` but should be `ξ`
+    numerator = -2 * a3
+    denominator = (a2 + sqrt(a2^2 - 4 * a1 * a3))
+    ξ = numerator / denominator
+
+    return ξ * w + w_k
 end
-transform(b::RationalQuadraticSpline, x::AbstractVecOrMat) = with_logabsdet_jacobian(b, x)[1]
-logabsdetjac(b::RationalQuadraticSpline, x::AbstractVecOrMat) = with_logabsdet_jacobian(b, x)[2]
 
+function transform(ib::Inverse{<:TorRationalQuadraticSpline}, y::Real)
+    return rqs_univariate_inverse(ib.orig.widths, ib.orig.heights, ib.orig.derivatives, y)
+end
 
-# Inverse for scalar input, single spline
-function Bijectors.with_logabsdet_jacobian(ib::Inverse{<:RationalQuadraticSpline{<:AbstractVector}}, y::Real)
+# TODO: Improve.
+function transform(ib::Inverse{<:TorRationalQuadraticSpline}, y::AbstractVector)
     b = ib.orig
-    _rational_quadratic_spline_inv(y, b.x_pos, b.y_pos, b.knot_slopes, b.range_min, b.range_max)
+    return [
+        rqs_univariate_inverse(b.widths[i, :], b.heights[i, :], b.derivatives[i, :], y[i])
+        for i in 1:length(y)
+    ]
 end
 
-# Inverse for multi-dim input, multi-spline
-function Bijectors.with_logabsdet_jacobian(ib::Inverse{<:RationalQuadraticSpline{<:AbstractMatrix}}, y::AbstractVecOrMat)
-    b = ib.orig
-    x = similar(y)
-    logdet = similar(y)
+######################
+### `logabsdetjac` ###
+######################
+function rqs_logabsdetjac(widths, heights, derivatives, x::Real)
+    T = promote_type(eltype(widths), eltype(heights), eltype(derivatives), eltype(y))
+    K = length(widths) - 1
 
-    if ndims(y) == 1
-        # Vector case: each element uses its corresponding feature
-        for i in eachindex(y)
-            x[i], logdet[i] = _rational_quadratic_spline_inv(
-                y[i],
-                view(b.x_pos, :, i),
-                view(b.y_pos, :, i),
-                view(b.knot_slopes, :, i),
-                b.range_min,
-                b.range_max,
-            )
-        end
-    else
-        # Matrix case: iterate over all elements, using column index for feature
-        for col in 1:size(y, 2), row in 1:size(y, 1)
-            x[row, col], logdet[row, col] = _rational_quadratic_spline_inv(
-                y[row, col],
-                view(b.x_pos, :, col),
-                view(b.y_pos, :, col),
-                view(b.knot_slopes, :, col),
-                b.range_min,
-                b.range_max,
-            )
-        end
+    # Find which bin `x` is in
+    k = searchsortedfirst(widths, x) - 1
+
+    if k > K || k == 0
+        return zero(T) * x
     end
 
-    if ndims(y) == 1
-        return x, sum(logdet)
-    else # Matrix
-        return x, vec(sum(logdet, dims = 2))
+    # Width
+    w = widths[k+1] - widths[k]
+
+    # Slope
+    Δy = heights[k+1] - heights[k]
+
+    # Recurring quantities
+    s = Δy / w
+    ξ = (x - widths[k]) / w
+
+    numerator =
+        s^2 * (derivatives[k+1] * ξ^2 + 2 * s * ξ * (1 - ξ) + derivatives[k] * (1 - ξ)^2)
+    denominator = s + (derivatives[k+1] + derivatives[k] - 2 * s) * ξ * (1 - ξ)
+
+    return log(numerator) - 2 * log(denominator)
+end
+
+function rqs_logabsdetjac(
+    widths::AbstractVector, heights::AbstractVector, derivatives::AbstractVector, x::Real,
+)
+    T = promote_type(eltype(widths), eltype(heights), eltype(derivatives), eltype(x))
+
+    if (x ≤ -widths[end]) || (x ≥ widths[end])
+        return zero(T) * x
     end
+
+    K = length(widths)
+    k = searchsortedfirst(widths, x) - 1
+
+    # Width
+    w_k = (k == 0) ? -widths[end] : widths[k]
+    w = widths[k+1] - w_k
+
+    # Slope
+    h_k = (k == 0) ? -heights[end] : heights[k]
+    Δy = heights[k+1] - h_k
+
+    # Recurring quantities
+    s = Δy / w
+    ξ = (x - w_k) / w
+
+    d_k = (k == 0) ? one(T) : derivatives[k]
+    d_kplus1 = (k == K - 1) ? one(T) : derivatives[k+1]
+
+    numerator = s^2 * (d_kplus1 * ξ^2 + 2 * s * ξ * (1 - ξ) + d_k * (1 - ξ)^2)
+    denominator = s + (d_kplus1 + d_k - 2 * s) * ξ * (1 - ξ)
+
+    return log(numerator) - 2 * log(denominator)
+end
+
+function logabsdetjac(b::TorRationalQuadraticSpline{<:AbstractVector}, x::Real)
+    return rqs_logabsdetjac(b.widths, b.heights, b.derivatives, x)
+end
+
+# TODO: Improve.
+function logabsdetjac(b::TorRationalQuadraticSpline{<:AbstractMatrix}, x::AbstractVector)
+    return sum([
+        rqs_logabsdetjac(b.widths[i, :], b.heights[i, :], b.derivatives[i, :], x[i]) for
+        i in 1:length(x)
+    ])
+end
+
+#################
+### `forward` ###
+#################
+
+# TODO: implement this for `x::AbstractVector` and similarily for 1-dimensional `b`,
+# and possibly inverses too?
+function rqs_forward(
+    widths::AbstractVector, heights::AbstractVector, derivatives::AbstractVector, x::Real,
+)
+    T = promote_type(eltype(widths), eltype(heights), eltype(derivatives), eltype(x))
+
+    if (x ≤ -widths[end]) || (x ≥ widths[end])
+        return (one(T) * x, zero(T) * x)
+    end
+
+    # Find which bin `x` is in
+    K = length(widths)
+    k = searchsortedfirst(widths, x) - 1
+
+    # Width
+    w_k = (k == 0) ? -widths[end] : widths[k]
+    w = widths[k+1] - w_k
+
+    # Slope
+    h_k = (k == 0) ? -heights[end] : heights[k]
+    Δy = heights[k+1] - h_k
+
+    # Recurring quantities
+    s = Δy / w
+    ξ = (x - w_k) / w
+
+    d_k = (k == 0) ? one(T) : derivatives[k]
+    d_kplus1 = (k == K - 1) ? one(T) : derivatives[k+1]
+
+    # Re-used for both `logjac` and `y`
+    denominator = s + (d_kplus1 + d_k - 2 * s) * ξ * (1 - ξ)
+
+    # logjac
+    numerator_jl = s^2 * (d_kplus1 * ξ^2 + 2 * s * ξ * (1 - ξ) + d_k * (1 - ξ)^2)
+    logjac = log(numerator_jl) - 2 * log(denominator)
+
+    # y
+    numerator_y = Δy * (s * ξ^2 + d_k * ξ * (1 - ξ))
+    y = h_k + numerator_y / denominator
+
+    return (y, logjac)
+end
+
+function with_logabsdet_jacobian(b::TorRationalQuadraticSpline{<:AbstractVector}, x::Real)
+    return rqs_forward(b.widths, b.heights, b.derivatives, x)
+end
+
+function with_logabsdet_jacobian(
+    b::TorRationalQuadraticSpline{<:AbstractMatrix}, x::AbstractVector,
+)
+    return transform(b, x), logabsdetjac(b, x)
 end

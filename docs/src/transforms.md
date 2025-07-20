@@ -95,7 +95,7 @@ Bijectors.Inverse
 Bijectors.CorrBijector
 Bijectors.LeakyReLU
 Bijectors.Stacked
-Bijectors.RationalQuadraticSpline
+Bijectors.TorRationalQuadraticSpline
 Bijectors.Coupling
 Bijectors.OrderedBijector
 Bijectors.NamedTransform

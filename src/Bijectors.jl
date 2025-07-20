@@ -76,6 +76,7 @@ export TransformDistribution,
     Coupling,
     InvertibleBatchNorm,
     RationalQuadraticSpline,
+    TorRationalQuadraticSpline,
     elementwise
 
 const DEBUG = Bool(parse(Int, get(ENV, "DEBUG_BIJECTORS", "0")))

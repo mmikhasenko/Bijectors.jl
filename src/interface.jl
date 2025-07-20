@@ -323,6 +323,7 @@ include("bijectors/leaky_relu.jl")
 include("bijectors/coupling.jl")
 include("bijectors/normalise.jl")
 include("bijectors/rational_quadratic_spline.jl")
+include("bijectors/distrax_rational_quadratic_spline.jl")
 
 ##################
 # Other includes #

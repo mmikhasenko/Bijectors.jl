@@ -1,7 +1,6 @@
 using Bijectors
 using Bijectors: RationalQuadraticSpline
 using Distributions
-using LogExpFunctions: softmax, softplus
 using Random
 
 Random.seed!(123)
