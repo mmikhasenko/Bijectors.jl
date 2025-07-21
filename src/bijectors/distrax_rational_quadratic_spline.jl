@@ -11,12 +11,12 @@ and addressing issues with multi-dimensional inputs and parameterization.
 [1] Durkan, C., Bekasov, A., Murray, I., & Papamakarios, G., Neural Spline Flows, CoRR, arXiv:1906.04032 [stat.ML], (2019).
 =#
 
-struct RationalQuadraticSpline{T} <: Bijector
+struct RationalQuadraticSpline{T, S} <: Bijector
     x_pos::T
     y_pos::T
     knot_slopes::T
-    range_min::Float64
-    range_max::Float64
+    range_min::S
+    range_max::S
     boundary_slopes::Symbol
 
     function RationalQuadraticSpline(
@@ -31,12 +31,12 @@ struct RationalQuadraticSpline{T} <: Bijector
         @assert min_bin_size > 0
         @assert min_knot_slope > 0
 
-        # AD COMPATIBILITY FIX: Convert all scalars to match params element type
+        # AD COMPATIBILITY: Ensure all parameters have compatible types
         T = eltype(params)
-        range_min_T = convert(T, range_min)
-        range_max_T = convert(T, range_max)
-        min_bin_size_T = convert(T, min_bin_size)
-        min_knot_slope_T = convert(T, min_knot_slope)
+        range_min_T = T(range_min)
+        range_max_T = T(range_max)
+        min_bin_size_T = T(min_bin_size)
+        min_knot_slope_T = T(min_knot_slope)
 
         # Determine number of bins and features
         P = size(params, 1)
@@ -62,16 +62,16 @@ struct RationalQuadraticSpline{T} <: Bijector
         x_pos_inter = cumsum(bin_widths; dims = 1)
         y_pos_inter = cumsum(bin_heights; dims = 1)
 
-        # Add boundaries - handle arbitrary dimensions
+        # Add boundaries - handle arbitrary dimensions with AD compatibility
         pad_dims = size(params)[2:end]
         if ndims(params) == 1
             # Scalar parameter case - use typed versions for AD compatibility
             x_pos = vcat([range_min_T], range_min_T .+ x_pos_inter[1:end-1], [range_max_T])
             y_pos = vcat([range_min_T], range_min_T .+ y_pos_inter[1:end-1], [range_max_T])
         else
-            # Multi-dimensional parameter case - use similar() for AD compatibility
-            pad_below = fill!(similar(params, 1, pad_dims...), range_min_T)
-            pad_above = fill!(similar(params, 1, pad_dims...), range_max_T)
+            # Multi-dimensional parameter case - create compatible arrays
+            pad_below = fill(range_min_T, 1, pad_dims...)
+            pad_above = fill(range_max_T, 1, pad_dims...)
             x_pos = vcat(pad_below, range_min_T .+ x_pos_inter[1:end-1, ntuple(i -> :, ndims(params) - 1)...], pad_above)
             y_pos = vcat(pad_below, range_min_T .+ y_pos_inter[1:end-1, ntuple(i -> :, ndims(params) - 1)...], pad_above)
         end
@@ -92,18 +92,22 @@ struct RationalQuadraticSpline{T} <: Bijector
                 # Scalar parameter case - use typed one()
                 knot_slopes = vcat([one(T)], knot_slopes_[2:end-1], [one(T)])
             else
-                # Multi-dimensional parameter case - use similar() for AD compatibility
-                ones_pad = fill!(similar(params, 1, pad_dims...), one(T))
+                # Multi-dimensional parameter case - create compatible arrays
+                ones_pad = fill(one(T), 1, pad_dims...)
                 knot_slopes = vcat(ones_pad, knot_slopes_[2:end-1, ntuple(i -> :, ndims(params) - 1)...], ones_pad)
             end
         else
             throw(ArgumentError("Unknown boundary_slopes: $boundary_slopes"))
         end
 
-        T_struct = typeof(x_pos)
-        new{T_struct}(x_pos, y_pos, knot_slopes, range_min, range_max, boundary_slopes)
+        # Create struct with flexible type handling
+        T_array = typeof(x_pos)
+        S_scalar = typeof(range_min_T)
+        new{T_array, S_scalar}(x_pos, y_pos, knot_slopes, range_min_T, range_max_T, boundary_slopes)
     end
 end
+
+
 
 # Helper function to validate broadcasting compatibility
 function _validate_broadcasting(params, x)
