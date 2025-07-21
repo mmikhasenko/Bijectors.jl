@@ -10,6 +10,9 @@ using Tracker
 using Bijectors
 using Bijectors: RationalQuadraticSpline
 
+# Include test utilities
+include("utils.jl")
+
 @testset "AD for RationalQuadraticSpline" begin
     # Test scalar case (wrapped in array for AD testing)
     @testset "Scalar input" begin

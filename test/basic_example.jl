@@ -82,9 +82,14 @@ plot(layout = grid(1, 2), size = (1000, 500),
 
 using NormalizingFlows
 using NormalizingFlows.ADTypes
-
+using Enzyme
 
 d_target = Distributions.Product([Normal(0.5, 0.2), Normal(0.5, 0.2)])
+
+let
+    logp = Base.Fix1(logpdf, d_target)
+    NormalizingFlows.elbo_single_sample(q_advanced, logp, [0.2, 0.3])
+end
 
 sample_per_iter = 100
 flow_trained, stats, _ = train_flow(
@@ -94,7 +99,9 @@ flow_trained, stats, _ = train_flow(
     sample_per_iter;
     max_iters = 20,
     optimiser = Optimisers.ADAM(0.01),
-    ADbackend = ADTypes.AutoReverseDiff(),
+    ADbackend = ADTypes.AutoEnzyme(;
+        function_annotation = Enzyme.Duplicated,
+        mode = Enzyme.set_runtime_activity(Enzyme.Reverse)),
 )
 
 # y -> logpdf(d_target, y)
