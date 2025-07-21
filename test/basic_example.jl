@@ -83,7 +83,8 @@ plot(layout = grid(1, 2), size = (1000, 500),
 using NormalizingFlows
 using NormalizingFlows.ADTypes
 
-# using FiniteDiff
+
+d_target = Distributions.Product([Normal(0.5, 0.2), Normal(0.5, 0.2)])
 
 sample_per_iter = 100
 flow_trained, stats, _ = train_flow(
@@ -96,7 +97,6 @@ flow_trained, stats, _ = train_flow(
     ADbackend = ADTypes.AutoReverseDiff(),
 )
 
-d_target = Distributions.Product([Normal(0.5, 0.2), Normal(0.5, 0.2)])
 # y -> logpdf(d_target, y)
 
 
