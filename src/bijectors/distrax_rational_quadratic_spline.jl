@@ -31,6 +31,13 @@ struct RationalQuadraticSpline{T} <: Bijector
         @assert min_bin_size > 0
         @assert min_knot_slope > 0
 
+        # AD COMPATIBILITY FIX: Convert all scalars to match params element type
+        T = eltype(params)
+        range_min_T = convert(T, range_min)
+        range_max_T = convert(T, range_max)
+        min_bin_size_T = convert(T, min_bin_size)
+        min_knot_slope_T = convert(T, min_knot_slope)
+
         # Determine number of bins and features
         P = size(params, 1)
         num_bins = (P - 1) ÷ 3
@@ -42,14 +49,14 @@ struct RationalQuadraticSpline{T} <: Bijector
         unnormalized_knot_slopes = params[2*num_bins+1:end, ntuple(i -> :, ndims(params) - 1)...]
 
         # Normalize bin sizes
-        range_size = range_max - range_min
+        range_size = range_max_T - range_min_T
 
         # _normalize_bin_sizes from distrax
         bin_widths = LogExpFunctions.softmax(unnormalized_bin_widths; dims = 1)
-        bin_widths = bin_widths .* (range_size - num_bins * min_bin_size) .+ min_bin_size
+        bin_widths = bin_widths .* (range_size - convert(T, num_bins) * min_bin_size_T) .+ min_bin_size_T
 
         bin_heights = LogExpFunctions.softmax(unnormalized_bin_heights; dims = 1)
-        bin_heights = bin_heights .* (range_size - num_bins * min_bin_size) .+ min_bin_size
+        bin_heights = bin_heights .* (range_size - convert(T, num_bins) * min_bin_size_T) .+ min_bin_size_T
 
         # Compute bin positions
         x_pos_inter = cumsum(bin_widths; dims = 1)
@@ -58,43 +65,43 @@ struct RationalQuadraticSpline{T} <: Bijector
         # Add boundaries - handle arbitrary dimensions
         pad_dims = size(params)[2:end]
         if ndims(params) == 1
-            # Scalar parameter case
-            x_pos = vcat([range_min], range_min .+ x_pos_inter[1:end-1], [range_max])
-            y_pos = vcat([range_min], range_min .+ y_pos_inter[1:end-1], [range_max])
+            # Scalar parameter case - use typed versions for AD compatibility
+            x_pos = vcat([range_min_T], range_min_T .+ x_pos_inter[1:end-1], [range_max_T])
+            y_pos = vcat([range_min_T], range_min_T .+ y_pos_inter[1:end-1], [range_max_T])
         else
-            # Multi-dimensional parameter case
-            pad_below = fill(range_min, (1, pad_dims...))
-            pad_above = fill(range_max, (1, pad_dims...))
-            x_pos = vcat(pad_below, range_min .+ x_pos_inter[1:end-1, ntuple(i -> :, ndims(params) - 1)...], pad_above)
-            y_pos = vcat(pad_below, range_min .+ y_pos_inter[1:end-1, ntuple(i -> :, ndims(params) - 1)...], pad_above)
+            # Multi-dimensional parameter case - use similar() for AD compatibility
+            pad_below = fill!(similar(params, 1, pad_dims...), range_min_T)
+            pad_above = fill!(similar(params, 1, pad_dims...), range_max_T)
+            x_pos = vcat(pad_below, range_min_T .+ x_pos_inter[1:end-1, ntuple(i -> :, ndims(params) - 1)...], pad_above)
+            y_pos = vcat(pad_below, range_min_T .+ y_pos_inter[1:end-1, ntuple(i -> :, ndims(params) - 1)...], pad_above)
         end
 
         # _normalize_knot_slopes from distrax
         # The offset is such that the normalized knot slope will be equal to 1
         # whenever the unnormalized knot slope is equal to 0.
-        if min_knot_slope >= 1.0
-            throw(ArgumentError("The minimum knot slope must be less than 1; got $(min_knot_slope)."))
+        if min_knot_slope_T >= one(T)
+            throw(ArgumentError("The minimum knot slope must be less than 1; got $(min_knot_slope_T)."))
         end
-        offset = log(exp(1.0 - min_knot_slope) - 1.0)
-        knot_slopes_ = LogExpFunctions.softplus.(unnormalized_knot_slopes .+ offset) .+ min_knot_slope
+        offset = log(exp(one(T) - min_knot_slope_T) - one(T))
+        knot_slopes_ = LogExpFunctions.softplus.(unnormalized_knot_slopes .+ offset) .+ min_knot_slope_T
 
         if boundary_slopes === :unconstrained
             knot_slopes = knot_slopes_
         elseif boundary_slopes === :identity
             if ndims(params) == 1
-                # Scalar parameter case
-                knot_slopes = vcat([one(eltype(params))], knot_slopes_[2:end-1], [one(eltype(params))])
+                # Scalar parameter case - use typed one()
+                knot_slopes = vcat([one(T)], knot_slopes_[2:end-1], [one(T)])
             else
-                # Multi-dimensional parameter case
-                ones_pad = ones(eltype(params), (1, pad_dims...))
+                # Multi-dimensional parameter case - use similar() for AD compatibility
+                ones_pad = fill!(similar(params, 1, pad_dims...), one(T))
                 knot_slopes = vcat(ones_pad, knot_slopes_[2:end-1, ntuple(i -> :, ndims(params) - 1)...], ones_pad)
             end
         else
             throw(ArgumentError("Unknown boundary_slopes: $boundary_slopes"))
         end
 
-        T = typeof(x_pos)
-        new{T}(x_pos, y_pos, knot_slopes, range_min, range_max, boundary_slopes)
+        T_struct = typeof(x_pos)
+        new{T_struct}(x_pos, y_pos, knot_slopes, range_min, range_max, boundary_slopes)
     end
 end
 
