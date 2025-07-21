@@ -1,4 +1,3 @@
-
 using LogExpFunctions
 using NNlib
 #=
@@ -18,95 +17,147 @@ struct RationalQuadraticSpline{T, S} <: Bijector
     range_min::S
     range_max::S
     boundary_slopes::Symbol
-
-    function RationalQuadraticSpline(
-        params::AbstractArray,
-        range_min::Real = zero(eltype(params)),
-        range_max::Real = one(eltype(params));
-        boundary_slopes::Symbol = :unconstrained,
-        min_bin_size::Real = 1e-4,
-        min_knot_slope::Real = 1e-4,
-    )
-        @assert range_min < range_max
-        @assert min_bin_size > 0
-        @assert min_knot_slope > 0
-
-        # AD COMPATIBILITY: Ensure all parameters have compatible types
-        T = eltype(params)
-        range_min_T = T(range_min)
-        range_max_T = T(range_max)
-        min_bin_size_T = T(min_bin_size)
-        min_knot_slope_T = T(min_knot_slope)
-
-        # Determine number of bins and features
-        P = size(params, 1)
-        num_bins = (P - 1) ÷ 3
-        @assert 3 * num_bins + 1 == P "First dimension of `params` must have size `3 * num_bins + 1`"
-
-        # Extract unnormalized parameters along first dimension
-        unnormalized_bin_widths = params[1:num_bins, ntuple(i -> :, ndims(params) - 1)...]
-        unnormalized_bin_heights = params[num_bins+1:2*num_bins, ntuple(i -> :, ndims(params) - 1)...]
-        unnormalized_knot_slopes = params[2*num_bins+1:end, ntuple(i -> :, ndims(params) - 1)...]
-
-        # Normalize bin sizes
-        range_size = range_max_T - range_min_T
-
-        # _normalize_bin_sizes from distrax
-        bin_widths = LogExpFunctions.softmax(unnormalized_bin_widths; dims = 1)
-        bin_widths = bin_widths .* (range_size - convert(T, num_bins) * min_bin_size_T) .+ min_bin_size_T
-
-        bin_heights = LogExpFunctions.softmax(unnormalized_bin_heights; dims = 1)
-        bin_heights = bin_heights .* (range_size - convert(T, num_bins) * min_bin_size_T) .+ min_bin_size_T
-
-        # Compute bin positions
-        x_pos_inter = cumsum(bin_widths; dims = 1)
-        y_pos_inter = cumsum(bin_heights; dims = 1)
-
-        # Add boundaries - handle arbitrary dimensions with AD compatibility
-        pad_dims = size(params)[2:end]
-        if ndims(params) == 1
-            # Scalar parameter case - use typed versions for AD compatibility
-            x_pos = vcat([range_min_T], range_min_T .+ x_pos_inter[1:end-1], [range_max_T])
-            y_pos = vcat([range_min_T], range_min_T .+ y_pos_inter[1:end-1], [range_max_T])
-        else
-            # Multi-dimensional parameter case - create compatible arrays
-            pad_below = fill(range_min_T, 1, pad_dims...)
-            pad_above = fill(range_max_T, 1, pad_dims...)
-            x_pos = vcat(pad_below, range_min_T .+ x_pos_inter[1:end-1, ntuple(i -> :, ndims(params) - 1)...], pad_above)
-            y_pos = vcat(pad_below, range_min_T .+ y_pos_inter[1:end-1, ntuple(i -> :, ndims(params) - 1)...], pad_above)
-        end
-
-        # _normalize_knot_slopes from distrax
-        # The offset is such that the normalized knot slope will be equal to 1
-        # whenever the unnormalized knot slope is equal to 0.
-        if min_knot_slope_T >= one(T)
-            throw(ArgumentError("The minimum knot slope must be less than 1; got $(min_knot_slope_T)."))
-        end
-        offset = log(exp(one(T) - min_knot_slope_T) - one(T))
-        knot_slopes_ = LogExpFunctions.softplus.(unnormalized_knot_slopes .+ offset) .+ min_knot_slope_T
-
-        if boundary_slopes === :unconstrained
-            knot_slopes = knot_slopes_
-        elseif boundary_slopes === :identity
-            if ndims(params) == 1
-                # Scalar parameter case - use typed one()
-                knot_slopes = vcat([one(T)], knot_slopes_[2:end-1], [one(T)])
-            else
-                # Multi-dimensional parameter case - create compatible arrays
-                ones_pad = fill(one(T), 1, pad_dims...)
-                knot_slopes = vcat(ones_pad, knot_slopes_[2:end-1, ntuple(i -> :, ndims(params) - 1)...], ones_pad)
-            end
-        else
-            throw(ArgumentError("Unknown boundary_slopes: $boundary_slopes"))
-        end
-
-        # Create struct with flexible type handling
-        T_array = typeof(x_pos)
-        S_scalar = typeof(range_min_T)
-        new{T_array, S_scalar}(x_pos, y_pos, knot_slopes, range_min_T, range_max_T, boundary_slopes)
-    end
 end
 
+# Type-stable constructor for 1D parameters (AbstractVector)
+function RationalQuadraticSpline(
+    params::AbstractVector{T},
+    range_min::Real = zero(T),
+    range_max::Real = one(T);
+    boundary_slopes::Symbol = :unconstrained,
+    min_bin_size::Real = T(1e-4),
+    min_knot_slope::Real = T(1e-4),
+) where {T <: Real}
+    # Type-stable error handling
+    range_min < range_max || throw(ArgumentError("range_min must be less than range_max"))
+    min_bin_size > 0 || throw(ArgumentError("min_bin_size must be positive"))
+    min_knot_slope > 0 || throw(ArgumentError("min_knot_slope must be positive"))
+
+    # Convert to consistent types
+    range_min_T = T(range_min)
+    range_max_T = T(range_max)
+    min_bin_size_T = T(min_bin_size)
+    min_knot_slope_T = T(min_knot_slope)
+
+    # Determine number of bins
+    P = length(params)
+    num_bins = (P - 1) ÷ 3
+    3 * num_bins + 1 == P || throw(ArgumentError("Length of `params` must be `3 * num_bins + 1`"))
+
+    # Extract unnormalized parameters
+    unnormalized_bin_widths = @view params[1:num_bins]
+    unnormalized_bin_heights = @view params[num_bins+1:2*num_bins]
+    unnormalized_knot_slopes = @view params[2*num_bins+1:end]
+
+    # Normalize bin sizes
+    range_size = range_max_T - range_min_T
+
+    # _normalize_bin_sizes from distrax
+    bin_widths = LogExpFunctions.softmax(unnormalized_bin_widths)
+    bin_widths = bin_widths .* (range_size - T(num_bins) * min_bin_size_T) .+ min_bin_size_T
+
+    bin_heights = LogExpFunctions.softmax(unnormalized_bin_heights)
+    bin_heights = bin_heights .* (range_size - T(num_bins) * min_bin_size_T) .+ min_bin_size_T
+
+    # Compute bin positions
+    x_pos_inter = cumsum(bin_widths)
+    y_pos_inter = cumsum(bin_heights)
+
+    # Add boundaries - 1D case
+    x_pos = vcat([range_min_T], range_min_T .+ x_pos_inter[1:end-1], [range_max_T])
+    y_pos = vcat([range_min_T], range_min_T .+ y_pos_inter[1:end-1], [range_max_T])
+
+    # _normalize_knot_slopes from distrax
+    min_knot_slope_T >= one(T) && throw(ArgumentError("The minimum knot slope must be less than 1; got $(min_knot_slope_T)."))
+
+    offset = log(exp(one(T) - min_knot_slope_T) - one(T))
+    knot_slopes_ = LogExpFunctions.softplus.(unnormalized_knot_slopes .+ offset) .+ min_knot_slope_T
+
+    knot_slopes = if boundary_slopes === :unconstrained
+        knot_slopes_
+    elseif boundary_slopes === :identity
+        vcat([one(T)], knot_slopes_[2:end-1], [one(T)])
+    else
+        throw(ArgumentError("Unknown boundary_slopes: $boundary_slopes"))
+    end
+
+    # Create struct with proper types
+    RationalQuadraticSpline{typeof(x_pos), T}(x_pos, y_pos, knot_slopes, range_min_T, range_max_T, boundary_slopes)
+end
+
+# Type-stable constructor for multi-dimensional parameters (AbstractArray with ndims > 1)
+function RationalQuadraticSpline(
+    params::AbstractArray{T, N},
+    range_min::Real = zero(T),
+    range_max::Real = one(T);
+    boundary_slopes::Symbol = :unconstrained,
+    min_bin_size::Real = T(1e-4),
+    min_knot_slope::Real = T(1e-4),
+) where {T <: Real, N}
+    # Ensure this method is only used for multi-dimensional arrays
+    N > 1 || throw(ArgumentError("Use the AbstractVector constructor for 1D parameters"))
+
+    # Type-stable error handling
+    range_min < range_max || throw(ArgumentError("range_min must be less than range_max"))
+    min_bin_size > 0 || throw(ArgumentError("min_bin_size must be positive"))
+    min_knot_slope > 0 || throw(ArgumentError("min_knot_slope must be positive"))
+
+    # Convert to consistent types
+    range_min_T = T(range_min)
+    range_max_T = T(range_max)
+    min_bin_size_T = T(min_bin_size)
+    min_knot_slope_T = T(min_knot_slope)
+
+    # Determine number of bins and features
+    P = size(params, 1)
+    num_bins = (P - 1) ÷ 3
+    3 * num_bins + 1 == P || throw(ArgumentError("First dimension of `params` must have size `3 * num_bins + 1`"))
+
+    # Extract unnormalized parameters along first dimension
+    unnormalized_bin_widths = @view params[1:num_bins, ntuple(i -> :, N - 1)...]
+    unnormalized_bin_heights = @view params[num_bins+1:2*num_bins, ntuple(i -> :, N - 1)...]
+    unnormalized_knot_slopes = @view params[2*num_bins+1:end, ntuple(i -> :, N - 1)...]
+
+    # Normalize bin sizes
+    range_size = range_max_T - range_min_T
+
+    # _normalize_bin_sizes from distrax
+    bin_widths = LogExpFunctions.softmax(unnormalized_bin_widths; dims = 1)
+    bin_widths = bin_widths .* (range_size - T(num_bins) * min_bin_size_T) .+ min_bin_size_T
+
+    bin_heights = LogExpFunctions.softmax(unnormalized_bin_heights; dims = 1)
+    bin_heights = bin_heights .* (range_size - T(num_bins) * min_bin_size_T) .+ min_bin_size_T
+
+    # Compute bin positions
+    x_pos_inter = cumsum(bin_widths; dims = 1)
+    y_pos_inter = cumsum(bin_heights; dims = 1)
+
+    # Add boundaries - multi-dimensional case
+    pad_dims = size(params)[2:end]
+    pad_below = fill(range_min_T, 1, pad_dims...)
+    pad_above = fill(range_max_T, 1, pad_dims...)
+
+    x_pos = vcat(pad_below, range_min_T .+ x_pos_inter[1:end-1, ntuple(i -> :, N - 1)...], pad_above)
+    y_pos = vcat(pad_below, range_min_T .+ y_pos_inter[1:end-1, ntuple(i -> :, N - 1)...], pad_above)
+
+    # _normalize_knot_slopes from distrax
+    min_knot_slope_T >= one(T) && throw(ArgumentError("The minimum knot slope must be less than 1; got $(min_knot_slope_T)."))
+
+    offset = log(exp(one(T) - min_knot_slope_T) - one(T))
+    knot_slopes_ = LogExpFunctions.softplus.(unnormalized_knot_slopes .+ offset) .+ min_knot_slope_T
+
+    knot_slopes = if boundary_slopes === :unconstrained
+        knot_slopes_
+    elseif boundary_slopes === :identity
+        ones_pad = fill(one(T), 1, pad_dims...)
+        vcat(ones_pad, knot_slopes_[2:end-1, ntuple(i -> :, N - 1)...], ones_pad)
+    else
+        throw(ArgumentError("Unknown boundary_slopes: $boundary_slopes"))
+    end
+
+    # Create struct with proper types
+    RationalQuadraticSpline{typeof(x_pos), T}(x_pos, y_pos, knot_slopes, range_min_T, range_max_T, boundary_slopes)
+end
 
 
 # Helper function to validate broadcasting compatibility
