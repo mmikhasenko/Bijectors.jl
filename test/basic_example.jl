@@ -1,3 +1,7 @@
+using Pkg: Pkg
+Pkg.activate(@__DIR__)
+Pkg.instantiate()
+
 using Flux
 using Bijectors
 using Bijectors: RationalQuadraticSpline
@@ -82,7 +86,7 @@ plot(layout = grid(1, 2), size = (1000, 500),
 
 using NormalizingFlows
 using NormalizingFlows.ADTypes
-using Enzyme
+using NormalizingFlows.
 
 d_target = Distributions.Product([Normal(0.5, 0.2), Normal(0.5, 0.2)])
 
