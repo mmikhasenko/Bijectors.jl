@@ -10,12 +10,12 @@ and addressing issues with multi-dimensional inputs and parameterization.
 [1] Durkan, C., Bekasov, A., Murray, I., & Papamakarios, G., Neural Spline Flows, CoRR, arXiv:1906.04032 [stat.ML], (2019).
 =#
 
-struct RationalQuadraticSpline{T, S} <: Bijector
-    x_pos::T
-    y_pos::T
-    knot_slopes::T
-    range_min::S
-    range_max::S
+struct RationalQuadraticSpline{T, N} <: Bijector
+    x_pos::AbstractArray{T, N}
+    y_pos::AbstractArray{T, N}
+    knot_slopes::AbstractArray{T, N}
+    range_min::T
+    range_max::T
     boundary_slopes::Symbol
 end
 
@@ -82,7 +82,7 @@ function RationalQuadraticSpline(
     end
 
     # Create struct with proper types
-    RationalQuadraticSpline{typeof(x_pos), T}(x_pos, y_pos, knot_slopes, range_min_T, range_max_T, boundary_slopes)
+    RationalQuadraticSpline{T, 1}(x_pos, y_pos, knot_slopes, range_min_T, range_max_T, boundary_slopes)
 end
 
 # Type-stable constructor for multi-dimensional parameters (AbstractArray with ndims > 1)
@@ -156,7 +156,7 @@ function RationalQuadraticSpline(
     end
 
     # Create struct with proper types
-    RationalQuadraticSpline{typeof(x_pos), T}(x_pos, y_pos, knot_slopes, range_min_T, range_max_T, boundary_slopes)
+    RationalQuadraticSpline{T, N}(x_pos, y_pos, knot_slopes, range_min_T, range_max_T, boundary_slopes)
 end
 
 
