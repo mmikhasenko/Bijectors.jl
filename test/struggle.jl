@@ -17,10 +17,9 @@ using Mooncake: Mooncake
 using Random
 rng = MersenneTwister(42)
 
-struct NewRationalQuadraticSpline{T, N} <: Bijectors.Bijector
-    x_pos::AbstractArray{T, N}
-    y_pos::AbstractArray{T, N}
-    knot_slopes::AbstractArray{T, N}
+struct NewRationalQuadraticSpline{T} <: Bijectors.Bijector
+    x_pos::AbstractVector{T}
+    y_pos::AbstractVector{T}
 end
 
 transform(b::NewRationalQuadraticSpline, x) = with_logabsdet_jacobian(b, x)[1]
@@ -30,49 +29,29 @@ logabsdetjac(b::NewRationalQuadraticSpline, x) = with_logabsdet_jacobian(b, x)[2
 function NewRationalQuadraticSpline(
     params::AbstractVector{T},
 ) where {T <: Real}
-
-    num_bins = 2
-    x_pos = @view params[1:num_bins]
-    y_pos = @view params[num_bins+1:2*num_bins]
-    knot_slopes = @view params[2*num_bins+1:end-1]
-
-    NewRationalQuadraticSpline{T, 1}(x_pos, y_pos, knot_slopes)
+    NewRationalQuadraticSpline{T}(params[1:1], params[2:2])
 end
 
 
 # Core forward transformation for a scalar
-function _rational_quadratic_spline_fwd(x, x_pos, y_pos, knot_slopes)
-    k = sum(x .> x_pos[2:end-1]) + 1
-    return y_pos[k], knot_slopes[k]
+function _rational_quadratic_spline_fwd(x, x_pos)
+    return x_pos[1], x_pos[1]
 end
 
 
 # Core inverse transformation for a scalar
-function _rational_quadratic_spline_inv(y, x_pos, y_pos, knot_slopes)
-
-    k = sum(y .> y_pos[2:end-1]) + 1
-    return x_pos[k], -knot_slopes[k]
+function _rational_quadratic_spline_inv(y, x_pos)
+    return x_pos[1], -x_pos[1]
 end
 
 # Scalar input
 Bijectors.with_logabsdet_jacobian(b::NewRationalQuadraticSpline, x::Real) =
-    _rational_quadratic_spline_fwd(x, b.x_pos, b.y_pos, b.knot_slopes)
+    _rational_quadratic_spline_fwd(x, b.x_pos)
 
 # Array input with comprehensive broadcasting
 function Bijectors.with_logabsdet_jacobian(b::NewRationalQuadraticSpline, x::AbstractVector)
-    y = similar(x)
-    logdet = similar(x)
-
     x_pos_slice = b.x_pos
-    y_pos_slice = b.y_pos
-    knot_slopes_slice = b.knot_slopes
-
-    for i in eachindex(x)
-        y[i], logdet[i] = _rational_quadratic_spline_fwd(
-            x[i], x_pos_slice, y_pos_slice, knot_slopes_slice,
-        )
-    end
-    return y, sum(logdet)
+    return x_pos_slice[1], -x_pos_slice[1]
 end
 
 
@@ -80,9 +59,7 @@ end
 function Bijectors.with_logabsdet_jacobian(ib::Inverse{<:NewRationalQuadraticSpline}, y::Real)
     b = ib.orig
     x_pos_slice = b.x_pos
-    y_pos_slice = b.y_pos
-    knot_slopes_slice = b.knot_slopes
-    return _rational_quadratic_spline_inv(y, x_pos_slice, y_pos_slice, knot_slopes_slice)
+    return _rational_quadratic_spline_inv(y, x_pos_slice)
 end
 
 # Inverse for array input with comprehensive broadcasting
@@ -94,18 +71,13 @@ function Bijectors.with_logabsdet_jacobian(ib::Inverse{<:NewRationalQuadraticSpl
 
     # Vector case: y has dimensions (N,)
     x_pos_slice = b.x_pos
-    y_pos_slice = b.y_pos
-    knot_slopes_slice = b.knot_slopes
     for i in eachindex(y)
         x[i], logdet[i] = _rational_quadratic_spline_inv(
-            y[i], x_pos_slice, y_pos_slice, knot_slopes_slice,
+            y[i], x_pos_slice,
         )
     end
     return x, sum(logdet)
 end
-
-
-
 
 
 flow = let
@@ -134,7 +106,6 @@ end
 let
     θ, re = Optimisers.destructure(flow)
     loss(θ) = -NormalizingFlows.loglikelihood(rng, re(θ), data)
-
 
     ADbackend = AutoEnzyme(;
         mode = Enzyme.set_runtime_activity(Enzyme.Reverse),
