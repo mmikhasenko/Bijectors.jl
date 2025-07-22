@@ -1,7 +1,7 @@
 using Test
 using Bijectors: RationalQuadraticSpline
-using Distributions
 using InteractiveUtils
+
 @testset "RationalQuadraticSpline Type Stability" begin
     @testset "RationalQuadraticSpline Constructor Type Stability" begin
         # Test parameters
