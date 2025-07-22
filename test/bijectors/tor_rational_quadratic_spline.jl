@@ -1,15 +1,15 @@
 using Test
 using Bijectors
-using Bijectors: RationalQuadraticSpline
+using Bijectors: TorRationalQuadraticSpline
 using LogExpFunctions
 
-@testset "RationalQuadraticSpline" begin
+@testset "TorRationalQuadraticSpline" begin
     # Monotonic spline on '[-B, B]' with `K` intermediate knots/"connection points".
     d = 2
     K = 3
     B = 2
-    b_uv = RationalQuadraticSpline(randn(K), randn(K), randn(K - 1), B)
-    b_mv = RationalQuadraticSpline(randn(d, K), randn(d, K), randn(d, K - 1), B)
+    b_uv = TorRationalQuadraticSpline(randn(K), randn(K), randn(K - 1), B)
+    b_mv = TorRationalQuadraticSpline(randn(d, K), randn(d, K), randn(d, K - 1), B)
 
     @testset "Constructor" begin
         # univariate
@@ -46,8 +46,8 @@ using LogExpFunctions
 
         # Outside of domain
         x = 5.0
-        test_bijector(b, -x; y=-x, logjac=0)
-        test_bijector(b, x; y=x, logjac=0)
+        test_bijector(b, -x; y = -x, logjac = 0)
+        test_bijector(b, x; y = x, logjac = 0)
 
         # multivariate
         b = b_mv
@@ -58,7 +58,7 @@ using LogExpFunctions
 
         # Outside of domain
         x = [-5.0, 5.0]
-        test_bijector(b, x; y=x, logjac=zero(eltype(x)))
+        test_bijector(b, x; y = x, logjac = zero(eltype(x)))
     end
 
     @testset "Float32 support" begin
@@ -71,8 +71,8 @@ using LogExpFunctions
         Ds = randn(Float32, d, K - 1)
 
         # success of construction
-        b = RationalQuadraticSpline(ws, hs, ds, B)
-        bb = RationalQuadraticSpline(Ws, Hs, Ds, B)
+        b = TorRationalQuadraticSpline(ws, hs, ds, B)
+        bb = TorRationalQuadraticSpline(Ws, Hs, Ds, B)
     end
 
     @testset "consistency after commit" begin
@@ -84,12 +84,12 @@ using LogExpFunctions
         Hs = randn(d, K)
         Ds = randn(d, K - 1)
 
-        Ws_t = hcat(zeros(size(Ws, 1)), LogExpFunctions.softmax(Ws; dims=2))
-        Hs_t = hcat(zeros(size(Ws, 1)), LogExpFunctions.softmax(Hs; dims=2))
+        Ws_t = hcat(zeros(size(Ws, 1)), LogExpFunctions.softmax(Ws; dims = 2))
+        Hs_t = hcat(zeros(size(Ws, 1)), LogExpFunctions.softmax(Hs; dims = 2))
 
         # success of construction
-        b = RationalQuadraticSpline(ws, hs, ds, B)
-        b_mv = RationalQuadraticSpline(Ws, Hs, Ds, B)
+        b = TorRationalQuadraticSpline(ws, hs, ds, B)
+        b_mv = TorRationalQuadraticSpline(Ws, Hs, Ds, B)
 
         # consistency of evaluation
         @test all(
@@ -100,7 +100,7 @@ using LogExpFunctions
             (cumsum(vcat([zero(Float64)], LogExpFunctions.softmax(hs))) .- 0.5) * 2 * B .≈
             b.heights,
         )
-        @test all((2 * B) .* (cumsum(Ws_t; dims=2) .- 0.5) .≈ b_mv.widths)
-        @test all((2 * B) .* (cumsum(Hs_t; dims=2) .- 0.5) .≈ b_mv.heights)
+        @test all((2 * B) .* (cumsum(Ws_t; dims = 2) .- 0.5) .≈ b_mv.widths)
+        @test all((2 * B) .* (cumsum(Hs_t; dims = 2) .- 0.5) .≈ b_mv.heights)
     end
 end

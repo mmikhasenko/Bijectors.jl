@@ -43,7 +43,8 @@ if GROUP == "All" || GROUP == "Interface"
     include("transform.jl")
     include("norm_flows.jl")
     include("bijectors/permute.jl")
-    include("bijectors/rational_quadratic_spline.jl")
+    include("bijectors/tor_rational_quadratic_spline.jl")
+    include("bijectors/distrax_rational_quadratic_spline.jl")
     include("bijectors/named_bijector.jl")
     include("bijectors/leaky_relu.jl")
     include("bijectors/coupling.jl")
@@ -57,14 +58,14 @@ if GROUP == "All" || GROUP == "Interface"
 
     @testset "doctests" begin
         Documenter.DocMeta.setdocmeta!(
-            Bijectors, :DocTestSetup, :(using Bijectors); recursive=true
+            Bijectors, :DocTestSetup, :(using Bijectors); recursive = true,
         )
         doctestfilters = [
             # Ignore the source of a warning in the doctest output, since this is dependent
             # on host. This is a line that starts with "└ @ " and ends with the line number.
             r"└ @ .+:[0-9]+",
         ]
-        Documenter.doctest(Bijectors; manual=false, doctestfilters=doctestfilters)
+        Documenter.doctest(Bijectors; manual = false, doctestfilters = doctestfilters)
     end
 end
 
@@ -75,4 +76,6 @@ if GROUP == "All" || GROUP == "AD"
     include("ad/pd.jl")
     include("ad/corr.jl")
     include("ad/stacked.jl")
+    include("ad/rational_quadratic_spline.jl")
+    include("ad/tor_rational_quadratic_spline.jl")
 end

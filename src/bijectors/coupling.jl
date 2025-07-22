@@ -1,5 +1,8 @@
 using SparseArrays
 
+abstract type AbstractMask end
+
+
 """
     PartitionMask{A}(A_1::A, A_2::A, A_3::A) where {A}
 
@@ -48,14 +51,14 @@ PartitionMask{Float32,SparseArrays.SparseMatrixCSC{Float32,Int64}}(
   [3, 1]  =  1.0)
 ```
 """
-struct PartitionMask{T,A}
+struct PartitionMask{T, A} <: AbstractMask
     A_1::A
     A_2::A
     A_3::A
 
     # Only make it possible to construct using matrices
-    function PartitionMask(A_1::A, A_2::A, A_3::A) where {T<:Real,A<:AbstractMatrix{T}}
-        return new{T,A}(A_1, A_2, A_3)
+    function PartitionMask(A_1::A, A_2::A, A_3::A) where {T <: Real, A <: AbstractMatrix{T}}
+        return new{T, A}(A_1, A_2, A_3)
     end
 end
 
@@ -66,7 +69,7 @@ function PartitionMask{T}(
     indices_1::AbstractVector{Int},
     indices_2::AbstractVector{Int},
     indices_3::AbstractVector{Int},
-) where {T<:Real}
+) where {T <: Real}
     A_1 = sparse(indices_1, 1:length(indices_1), one(T), n, length(indices_1))
     A_2 = sparse(indices_2, 1:length(indices_2), one(T), n, length(indices_2))
     A_3 = sparse(indices_3, 1:length(indices_3), one(T), n, length(indices_3))
@@ -175,7 +178,7 @@ julia> with_logabsdet_jacobian(cl, x)
 # References
 [1] Kobyzev, I., Prince, S., & Brubaker, M. A., Normalizing flows: introduction and ideas, CoRR, (),  (2019). 
 """
-struct Coupling{F,M} <: Bijector where {F,M<:PartitionMask}
+struct Coupling{F, M} <: Bijector where {F, M <: AbstractMask}
     θ::F
     mask::M
 end

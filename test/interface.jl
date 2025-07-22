@@ -18,7 +18,7 @@ using Bijectors:
     RadialLayer,
     Stacked,
     TruncatedBijector,
-    RationalQuadraticSpline,
+    TorRationalQuadraticSpline,
     LeakyReLU
 
 Random.seed!(123)
