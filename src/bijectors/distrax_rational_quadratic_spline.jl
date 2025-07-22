@@ -25,9 +25,10 @@ function RationalQuadraticSpline(
     range_min::Real = zero(T),
     range_max::Real = one(T);
     boundary_slopes::Symbol = :unconstrained,
-    min_bin_size::Real = T(1e-4),
-    min_knot_slope::Real = T(1e-4),
+    min_bin_size::T = T(1e-4),
+    min_knot_slope::T = T(1e-4),
 ) where {T <: Real}
+
     # Type-stable error handling
     range_min < range_max || throw(ArgumentError("range_min must be less than range_max"))
     min_bin_size > 0 || throw(ArgumentError("min_bin_size must be positive"))
